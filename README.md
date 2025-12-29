@@ -19,13 +19,8 @@
 <h3 align="center">Downloads</h3>
 
 <p align="center">
-  <a href="https://github.com/sapphirebluet/Movix/releases/latest/download/movix-windows-x64-setup.exe"><img src="https://img.shields.io/badge/Windows-Installer_x64-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows Installer x64"></a>
-  <a href="https://github.com/sapphirebluet/Movix/releases/latest/download/movix-windows-x86-setup.exe"><img src="https://img.shields.io/badge/Windows-Installer_x86-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows Installer x86"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/sapphirebluet/Movix/releases/latest/download/movix-windows-x64.exe"><img src="https://img.shields.io/badge/Windows-Portable_x64-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows Portable x64"></a>
-  <a href="https://github.com/sapphirebluet/Movix/releases/latest/download/movix-windows-x86.exe"><img src="https://img.shields.io/badge/Windows-Portable_x86-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows Portable x86"></a>
+  <a href="https://github.com/sapphirebluet/Movix/releases/latest/download/movix-windows-x64-setup.exe"><img src="https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows"></a>
+  <a href="https://github.com/sapphirebluet/Movix/releases/latest/download/movix-windows-x64.exe"><img src="https://img.shields.io/badge/Windows-Portable-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows Portable"></a>
 </p>
 
 <p align="center">

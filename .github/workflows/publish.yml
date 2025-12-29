@@ -35,43 +35,34 @@ jobs:
   compile-windows:
     needs: extract-metadata
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.arch }}
+          targets: x86_64-pc-windows-msvc
 
       - name: Initialize MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: ${{ matrix.arch == 'x86_64-pc-windows-msvc' && 'x64' || 'x86' }}
+          arch: x64
 
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: ${{ matrix.arch == 'x86_64-pc-windows-msvc' && 'UCRT64' || 'MINGW32' }}
+          msystem: UCRT64
           update: true
           install: >-
-            ${{ matrix.arch == 'x86_64-pc-windows-msvc' 
-            && 'mingw-w64-ucrt-x86_64-gstreamer mingw-w64-ucrt-x86_64-gst-plugins-base mingw-w64-ucrt-x86_64-pkg-config' 
-            || 'mingw-w64-i686-gstreamer mingw-w64-i686-gst-plugins-base mingw-w64-i686-pkg-config' }}
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-pkg-config
 
       - name: Set GStreamer environment
         shell: pwsh
         run: |
-          if ("${{ matrix.arch }}" -match "x86_64") {
-            $msysRoot = "C:\msys64\ucrt64"
-          } else {
-            $msysRoot = "C:\msys64\mingw32"
-          }
-          echo "PKG_CONFIG_PATH=$msysRoot\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "$msysRoot\bin" >> $env:GITHUB_PATH
+          echo "PKG_CONFIG_PATH=C:\msys64\ucrt64\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "C:\msys64\ucrt64\bin" >> $env:GITHUB_PATH
 
       - name: Provision NSIS
         run: choco install nsis -y
@@ -85,23 +76,21 @@ jobs:
       - name: Compile release binary
         env:
           RUSTFLAGS: -Clink-arg=assets/icon.res
-        run: cargo build --release --target ${{ matrix.arch }}
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Prepare portable distribution
         run: |
-          $suffix = if ("${{ matrix.arch }}" -match "x86_64") { "x64" } else { "x86" }
           New-Item -ItemType Directory -Force -Path output
-          Copy-Item "target/${{ matrix.arch }}/release/${{ env.APP_NAME }}.exe" "output/${{ env.APP_NAME }}-windows-$suffix.exe"
+          Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "output/${{ env.APP_NAME }}-windows-x64.exe"
 
       - name: Generate installer script
         run: |
-          $suffix = if ("${{ matrix.arch }}" -match "x86_64") { "x64" } else { "x86" }
           $ver = "${{ needs.extract-metadata.outputs.app_version }}"
           @"
           !include "MUI2.nsh"
 
           Name "${{ env.DISPLAY_NAME }}"
-          OutFile "output\${{ env.APP_NAME }}-windows-$suffix-setup.exe"
+          OutFile "output\${{ env.APP_NAME }}-windows-x64-setup.exe"
           InstallDir "`$PROGRAMFILES\${{ env.DISPLAY_NAME }}"
           RequestExecutionLevel admin
 
@@ -120,7 +109,7 @@ jobs:
 
           Section "MainSection"
             SetOutPath "`$INSTDIR"
-            File "target\${{ matrix.arch }}\release\${{ env.APP_NAME }}.exe"
+            File "target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe"
             File "assets\icon.ico"
 
             CreateDirectory "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}"
@@ -156,7 +145,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: win-${{ matrix.arch }}
+          name: win-x64
           path: output/*
 
   compile-linux:
