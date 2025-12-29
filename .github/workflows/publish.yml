@@ -79,67 +79,13 @@ jobs:
           # Copy main executable
           Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "portable\${{ env.APP_NAME }}\"
           
-          # Copy required GStreamer DLLs
-          $dlls = @(
-            "gstreamer-1.0-0.dll",
-            "gstvideo-1.0-0.dll",
-            "gstbase-1.0-0.dll",
-            "gstpbutils-1.0-0.dll",
-            "gstaudio-1.0-0.dll",
-            "gsttag-1.0-0.dll",
-            "gstapp-1.0-0.dll",
-            "gstgl-1.0-0.dll",
-            "gobject-2.0-0.dll",
-            "glib-2.0-0.dll",
-            "gio-2.0-0.dll",
-            "gmodule-2.0-0.dll",
-            "intl-8.dll",
-            "ffi-7.dll",
-            "ffi-8.dll",
-            "orc-0.4-0.dll",
-            "pcre2-8-0.dll",
-            "z-1.dll",
-            "zlib1.dll"
-          )
-          foreach ($dll in $dlls) {
-            $src = Join-Path $gstBin $dll
-            if (Test-Path $src) {
-              Copy-Item $src "portable\${{ env.APP_NAME }}\"
-            }
-          }
+          # Copy all GStreamer DLLs
+          Copy-Item "$gstBin\*.dll" "portable\${{ env.APP_NAME }}\"
           
-          # Copy GStreamer plugins
+          # Copy all GStreamer plugins
           $gstPlugins = "C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
           New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0"
-          $plugins = @(
-            "gstcoreelements.dll",
-            "gstplayback.dll",
-            "gstvideoconvertscale.dll",
-            "gstvideorate.dll",
-            "gstautodetect.dll",
-            "gstopengl.dll",
-            "gstd3d11.dll",
-            "gstwasapi2.dll",
-            "gstvolume.dll",
-            "gstaudioconvert.dll",
-            "gstaudioresample.dll",
-            "gstapp.dll",
-            "gsttypefindfunctions.dll",
-            "gstvideoparsersbad.dll",
-            "gstlibav.dll",
-            "gstisomp4.dll",
-            "gstmatroska.dll",
-            "gsthls.dll",
-            "gstdash.dll",
-            "gstsoup.dll",
-            "gstadaptivedemux2.dll"
-          )
-          foreach ($plugin in $plugins) {
-            $src = Join-Path $gstPlugins $plugin
-            if (Test-Path $src) {
-              Copy-Item $src "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\"
-            }
-          }
+          Copy-Item "$gstPlugins\*.dll" "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\"
           
           # Create zip
           New-Item -ItemType Directory -Force -Path output
@@ -175,11 +121,11 @@ jobs:
             File "assets\icon.ico"
             
             ; GStreamer DLLs
-            File /nonfatal "portable\${{ env.APP_NAME }}\*.dll"
+            File "portable\${{ env.APP_NAME }}\*.dll"
             
             ; GStreamer plugins
             SetOutPath "`$INSTDIR\lib\gstreamer-1.0"
-            File /nonfatal "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\*.dll"
+            File "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\*.dll"
             
             SetOutPath "`$INSTDIR"
 
