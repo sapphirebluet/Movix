@@ -82,54 +82,21 @@ jobs:
           # Copy all GStreamer DLLs from bin
           Copy-Item "$gstBin\*.dll" "portable\${{ env.APP_NAME }}\"
           
-          # Copy only required GStreamer plugins (not all - avoids missing codec deps)
+          # Copy all GStreamer plugins
           $gstPlugins = "C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
           New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0"
-          $plugins = @(
-            "gstcoreelements.dll",
-            "gstcoretracers.dll",
-            "gstplayback.dll",
-            "gstvideoconvertscale.dll",
-            "gstvideorate.dll",
-            "gstvideofilter.dll",
-            "gstautodetect.dll",
-            "gstopengl.dll",
-            "gstd3d11.dll",
-            "gstwasapi2.dll",
-            "gstvolume.dll",
-            "gstaudioconvert.dll",
-            "gstaudioresample.dll",
-            "gstaudioparsers.dll",
-            "gstapp.dll",
-            "gsttypefindfunctions.dll",
-            "gstvideoparsersbad.dll",
-            "gstlibav.dll",
-            "gstisomp4.dll",
-            "gstmatroska.dll",
-            "gsthls.dll",
-            "gstdash.dll",
-            "gstsoup.dll",
-            "gstadaptivedemux2.dll",
-            "gstgio.dll",
-            "gstopus.dll",
-            "gstvorbis.dll",
-            "gstogg.dll",
-            "gstmpg123.dll",
-            "gstflac.dll",
-            "gstid3demux.dll",
-            "gstid3tag.dll",
-            "gstmpegpsdemux.dll",
-            "gstmpegtsdemux.dll",
-            "gstavi.dll",
-            "gstasf.dll",
-            "gstwavparse.dll",
-            "gstaiff.dll",
-            "gstsubparse.dll"
+          Copy-Item "$gstPlugins\*.dll" "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\"
+          
+          # Remove plugins with external dependencies that cause warnings
+          $excludePlugins = @(
+            "gstamrnb.dll",
+            "gstamrwbdec.dll",
+            "gstpython.dll"
           )
-          foreach ($plugin in $plugins) {
-            $src = Join-Path $gstPlugins $plugin
-            if (Test-Path $src) {
-              Copy-Item $src "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\"
+          foreach ($plugin in $excludePlugins) {
+            $path = "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\$plugin"
+            if (Test-Path $path) {
+              Remove-Item $path -Force
             }
           }
           
