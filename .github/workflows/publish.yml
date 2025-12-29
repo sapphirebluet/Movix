@@ -73,8 +73,74 @@ jobs:
 
       - name: Prepare portable distribution
         run: |
+          $gstBin = "C:\gstreamer\1.0\msvc_x86_64\bin"
+          New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}"
+          
+          # Copy main executable
+          Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "portable\${{ env.APP_NAME }}\"
+          
+          # Copy required GStreamer DLLs
+          $dlls = @(
+            "gstreamer-1.0-0.dll",
+            "gstvideo-1.0-0.dll",
+            "gstbase-1.0-0.dll",
+            "gstpbutils-1.0-0.dll",
+            "gstaudio-1.0-0.dll",
+            "gsttag-1.0-0.dll",
+            "gstapp-1.0-0.dll",
+            "gstgl-1.0-0.dll",
+            "gobject-2.0-0.dll",
+            "glib-2.0-0.dll",
+            "gio-2.0-0.dll",
+            "gmodule-2.0-0.dll",
+            "intl-8.dll",
+            "ffi-8.dll",
+            "pcre2-8-0.dll",
+            "z-1.dll"
+          )
+          foreach ($dll in $dlls) {
+            $src = Join-Path $gstBin $dll
+            if (Test-Path $src) {
+              Copy-Item $src "portable\${{ env.APP_NAME }}\"
+            }
+          }
+          
+          # Copy GStreamer plugins
+          $gstPlugins = "C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
+          New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0"
+          $plugins = @(
+            "gstcoreelements.dll",
+            "gstplayback.dll",
+            "gstvideoconvertscale.dll",
+            "gstvideorate.dll",
+            "gstautodetect.dll",
+            "gstopengl.dll",
+            "gstd3d11.dll",
+            "gstwasapi2.dll",
+            "gstvolume.dll",
+            "gstaudioconvert.dll",
+            "gstaudioresample.dll",
+            "gstapp.dll",
+            "gsttypefindfunctions.dll",
+            "gstvideoparsersbad.dll",
+            "gstlibav.dll",
+            "gstisomp4.dll",
+            "gstmatroska.dll",
+            "gsthls.dll",
+            "gstdash.dll",
+            "gstsoup.dll",
+            "gstadaptivedemux2.dll"
+          )
+          foreach ($plugin in $plugins) {
+            $src = Join-Path $gstPlugins $plugin
+            if (Test-Path $src) {
+              Copy-Item $src "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\"
+            }
+          }
+          
+          # Create zip
           New-Item -ItemType Directory -Force -Path output
-          Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "output/${{ env.APP_NAME }}-windows-x64.exe"
+          Compress-Archive -Path "portable\${{ env.APP_NAME }}" -DestinationPath "output\${{ env.APP_NAME }}-windows-x64-portable.zip"
 
       - name: Generate installer script
         run: |
@@ -104,6 +170,15 @@ jobs:
             SetOutPath "`$INSTDIR"
             File "target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe"
             File "assets\icon.ico"
+            
+            ; GStreamer DLLs
+            File /nonfatal "portable\${{ env.APP_NAME }}\*.dll"
+            
+            ; GStreamer plugins
+            SetOutPath "`$INSTDIR\lib\gstreamer-1.0"
+            File /nonfatal "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\*.dll"
+            
+            SetOutPath "`$INSTDIR"
 
             CreateDirectory "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}"
             CreateShortcut "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}\${{ env.DISPLAY_NAME }}.lnk" "`$INSTDIR\${{ env.APP_NAME }}.exe" "" "`$INSTDIR\icon.ico"
@@ -122,6 +197,8 @@ jobs:
           Section "Uninstall"
             Delete "`$INSTDIR\${{ env.APP_NAME }}.exe"
             Delete "`$INSTDIR\icon.ico"
+            Delete "`$INSTDIR\*.dll"
+            RMDir /r "`$INSTDIR\lib"
             Delete "`$INSTDIR\uninstall.exe"
             RMDir "`$INSTDIR"
 

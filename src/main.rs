@@ -328,7 +328,20 @@ impl Movix {
     }
 }
 
+fn setup_gstreamer_paths() {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let plugin_path = exe_dir.join("lib").join("gstreamer-1.0");
+            if plugin_path.exists() {
+                std::env::set_var("GST_PLUGIN_PATH", &plugin_path);
+            }
+        }
+    }
+}
+
 fn main() -> iced::Result {
+    setup_gstreamer_paths();
+
     iced::application(Movix::new, Movix::update, Movix::view)
         .title("Movix")
         .theme(Movix::theme)
