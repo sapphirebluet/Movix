@@ -48,15 +48,12 @@ jobs:
         with:
           arch: x64
 
-      - name: Setup MSYS2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gstreamer
-            mingw-w64-ucrt-x86_64-gst-plugins-base
-            mingw-w64-ucrt-x86_64-pkg-config
+      - name: Install GStreamer
+        run: |
+          Invoke-WebRequest -Uri "https://media.githubusercontent.com/media/sapphirebluet/gstreamer-bin/refs/heads/main/gstreamer-1.0-msvc-x86_64-1.26.10.msi?download=true" -OutFile gstreamer.msi
+          Invoke-WebRequest -Uri "https://media.githubusercontent.com/media/sapphirebluet/gstreamer-bin/refs/heads/main/gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi?download=true" -OutFile gstreamer-devel.msi
+          Start-Process msiexec.exe -ArgumentList '/i', 'gstreamer.msi', '/quiet', '/norestart', 'INSTALLDIR=C:\gstreamer' -Wait
+          Start-Process msiexec.exe -ArgumentList '/i', 'gstreamer-devel.msi', '/quiet', '/norestart', 'INSTALLDIR=C:\gstreamer' -Wait
 
       - name: Provision NSIS
         run: choco install nsis -y
@@ -68,13 +65,11 @@ jobs:
         shell: cmd
 
       - name: Compile release binary
-        shell: msys2 {0}
         env:
           RUSTFLAGS: -Clink-arg=assets/icon.res
-        run: |
-          export PATH="/c/Users/runneradmin/.cargo/bin:$PATH"
-          export PKG_CONFIG_PATH="/ucrt64/lib/pkgconfig"
-          cargo build --release --target x86_64-pc-windows-msvc
+          PATH: C:\gstreamer\1.0\msvc_x86_64\bin;${{ env.PATH }}
+          PKG_CONFIG_PATH: C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Prepare portable distribution
         run: |
