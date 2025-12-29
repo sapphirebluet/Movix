@@ -52,23 +52,29 @@ jobs:
         with:
           arch: ${{ matrix.arch == 'x86_64-pc-windows-msvc' && 'x64' || 'x86' }}
 
-      - name: Install GStreamer
-        uses: blinemedical/setup-gstreamer@v1
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
         with:
-          version: '1.24.10'
+          msystem: ${{ matrix.arch == 'x86_64-pc-windows-msvc' && 'UCRT64' || 'MINGW32' }}
+          update: true
+          install: >-
+            ${{ matrix.arch == 'x86_64-pc-windows-msvc' 
+            && 'mingw-w64-ucrt-x86_64-gstreamer mingw-w64-ucrt-x86_64-gst-plugins-base mingw-w64-ucrt-x86_64-pkg-config' 
+            || 'mingw-w64-i686-gstreamer mingw-w64-i686-gst-plugins-base mingw-w64-i686-pkg-config' }}
 
       - name: Set GStreamer environment
+        shell: pwsh
         run: |
           if ("${{ matrix.arch }}" -match "x86_64") {
-            $gstRoot = "C:\gstreamer\1.0\msvc_x86_64"
+            $msysRoot = "C:\msys64\ucrt64"
           } else {
-            $gstRoot = "C:\gstreamer\1.0\msvc_x86"
+            $msysRoot = "C:\msys64\mingw32"
           }
-          echo "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" >> $env:GITHUB_ENV
-        shell: pwsh
+          echo "PKG_CONFIG_PATH=$msysRoot\lib\pkgconfig" >> $env:GITHUB_ENV
+          echo "$msysRoot\bin" >> $env:GITHUB_PATH
 
       - name: Provision NSIS
-        run: choco install nsis pkgconfiglite -y
+        run: choco install nsis -y
 
       - name: Embed application icon
         run: |
