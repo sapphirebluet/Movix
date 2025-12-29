@@ -14,12 +14,21 @@ pub struct AppSettings {
 
 impl AppSettings {
     pub fn config_path() -> Option<PathBuf> {
-        std::env::var("HOME").ok().map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("movix")
-                .join("config.json")
-        })
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var("APPDATA")
+                .ok()
+                .map(|appdata| PathBuf::from(appdata).join("movix").join("config.json"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::var("HOME").ok().map(|home| {
+                PathBuf::from(home)
+                    .join(".config")
+                    .join("movix")
+                    .join("config.json")
+            })
+        }
     }
 
     pub fn load() -> Option<Self> {

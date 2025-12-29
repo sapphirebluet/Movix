@@ -14,12 +14,24 @@ fn simple_hash(s: &str) -> String {
 }
 
 fn get_cache_dir() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(|home| {
-        PathBuf::from(home)
-            .join(".cache")
-            .join("movix")
-            .join("images")
-    })
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("LOCALAPPDATA").ok().map(|appdata| {
+            PathBuf::from(appdata)
+                .join("movix")
+                .join("cache")
+                .join("images")
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::env::var("HOME").ok().map(|home| {
+            PathBuf::from(home)
+                .join(".cache")
+                .join("movix")
+                .join("images")
+        })
+    }
 }
 
 pub const BACKGROUND_BLACK: Color = Color::from_rgb(0.0, 0.0, 0.0);

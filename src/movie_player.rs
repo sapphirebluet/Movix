@@ -52,6 +52,14 @@ pub struct PlaybackProgressStore {
 
 impl PlaybackProgressStore {
     pub fn new() -> Self {
+        #[cfg(target_os = "windows")]
+        let storage_path = std::env::var("APPDATA").ok().map(|appdata| {
+            PathBuf::from(appdata)
+                .join("movix")
+                .join("playback_progress.json")
+        });
+
+        #[cfg(not(target_os = "windows"))]
         let storage_path = std::env::var("HOME")
             .ok()
             .map(|home| PathBuf::from(home).join(".local/share/movix/playback_progress.json"));
