@@ -1,0 +1,336 @@
+name: Publish Artifacts
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_override:
+        description: 'Version tag (e.g. 1.0.0)'
+        required: false
+
+env:
+  APP_NAME: movix
+  DISPLAY_NAME: Movix
+
+jobs:
+  extract-metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.parse.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse release tag
+        id: parse
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_override }}" ]; then
+            APP_VERSION="${{ inputs.tag_override }}"
+          else
+            APP_VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "app_version=${APP_VERSION}" >> $GITHUB_OUTPUT
+
+  compile-windows:
+    needs: extract-metadata
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64-pc-windows-msvc, i686-pc-windows-msvc]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}
+
+      - name: Initialize MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch == 'x86_64-pc-windows-msvc' && 'x64' || 'x86' }}
+
+      - name: Provision NSIS
+        run: choco install nsis -y
+
+      - name: Embed application icon
+        run: |
+          echo '1 ICON "assets/icon.ico"' > assets/icon.rc
+          rc /fo assets/icon.res assets/icon.rc
+        shell: cmd
+
+      - name: Compile release binary
+        env:
+          RUSTFLAGS: -Clink-arg=assets/icon.res
+        run: cargo build --release --target ${{ matrix.arch }}
+
+      - name: Prepare portable distribution
+        run: |
+          $suffix = if ("${{ matrix.arch }}" -match "x86_64") { "x64" } else { "x86" }
+          New-Item -ItemType Directory -Force -Path output
+          Copy-Item "target/${{ matrix.arch }}/release/${{ env.APP_NAME }}.exe" "output/${{ env.APP_NAME }}-windows-$suffix.exe"
+
+      - name: Generate installer script
+        run: |
+          $suffix = if ("${{ matrix.arch }}" -match "x86_64") { "x64" } else { "x86" }
+          $ver = "${{ needs.extract-metadata.outputs.app_version }}"
+          @"
+          !include "MUI2.nsh"
+
+          Name "${{ env.DISPLAY_NAME }}"
+          OutFile "output\${{ env.APP_NAME }}-windows-$suffix-setup.exe"
+          InstallDir "`$PROGRAMFILES\${{ env.DISPLAY_NAME }}"
+          RequestExecutionLevel admin
+
+          !define MUI_ICON "assets\icon.ico"
+          !define MUI_UNICON "assets\icon.ico"
+
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+
+          !insertmacro MUI_UNPAGE_CONFIRM
+          !insertmacro MUI_UNPAGE_INSTFILES
+
+          !insertmacro MUI_LANGUAGE "English"
+
+          Section "MainSection"
+            SetOutPath "`$INSTDIR"
+            File "target\${{ matrix.arch }}\release\${{ env.APP_NAME }}.exe"
+            File "assets\icon.ico"
+
+            CreateDirectory "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}"
+            CreateShortcut "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}\${{ env.DISPLAY_NAME }}.lnk" "`$INSTDIR\${{ env.APP_NAME }}.exe" "" "`$INSTDIR\icon.ico"
+            CreateShortcut "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}\Remove ${{ env.DISPLAY_NAME }}.lnk" "`$INSTDIR\uninstall.exe"
+            CreateShortcut "`$DESKTOP\${{ env.DISPLAY_NAME }}.lnk" "`$INSTDIR\${{ env.APP_NAME }}.exe" "" "`$INSTDIR\icon.ico"
+
+            WriteUninstaller "`$INSTDIR\uninstall.exe"
+
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${{ env.DISPLAY_NAME }}" "DisplayName" "${{ env.DISPLAY_NAME }}"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${{ env.DISPLAY_NAME }}" "UninstallString" "`$INSTDIR\uninstall.exe"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${{ env.DISPLAY_NAME }}" "DisplayIcon" "`$INSTDIR\icon.ico"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${{ env.DISPLAY_NAME }}" "DisplayVersion" "$ver"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${{ env.DISPLAY_NAME }}" "Publisher" "Movix Contributors"
+          SectionEnd
+
+          Section "Uninstall"
+            Delete "`$INSTDIR\${{ env.APP_NAME }}.exe"
+            Delete "`$INSTDIR\icon.ico"
+            Delete "`$INSTDIR\uninstall.exe"
+            RMDir "`$INSTDIR"
+
+            Delete "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}\${{ env.DISPLAY_NAME }}.lnk"
+            Delete "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}\Remove ${{ env.DISPLAY_NAME }}.lnk"
+            RMDir "`$SMPROGRAMS\${{ env.DISPLAY_NAME }}"
+            Delete "`$DESKTOP\${{ env.DISPLAY_NAME }}.lnk"
+
+            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${{ env.DISPLAY_NAME }}"
+          SectionEnd
+          "@ | Out-File -Encoding UTF8 setup.nsi
+
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" setup.nsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-${{ matrix.arch }}
+          path: output/*
+
+  compile-linux:
+    needs: extract-metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Provision system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly rpm
+
+      - name: Compile release binary
+        run: cargo build --release
+
+      - name: Assemble AppImage bundle
+        run: |
+          APP_VER=${{ needs.extract-metadata.outputs.app_version }}
+          mkdir -p bundle/usr/bin bundle/usr/share/applications bundle/usr/share/icons/hicolor/256x256/apps
+
+          cp target/release/${{ env.APP_NAME }} bundle/usr/bin/
+          cp assets/icon.png bundle/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
+
+          cat > bundle/usr/share/applications/${{ env.APP_NAME }}.desktop << DESKTOP
+          [Desktop Entry]
+          Name=${{ env.DISPLAY_NAME }}
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Type=Application
+          Categories=AudioVideo;Video;
+          Comment=Native streaming client with Netflix-style interface
+          DESKTOP
+
+          cp bundle/usr/share/applications/${{ env.APP_NAME }}.desktop bundle/
+          ln -s usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png bundle/${{ env.APP_NAME }}.png
+
+          cat > bundle/AppRun << 'LAUNCHER'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          exec "${HERE}/usr/bin/${{ env.APP_NAME }}" "$@"
+          LAUNCHER
+          sed -i "s/\${{ env.APP_NAME }}/${{ env.APP_NAME }}/g" bundle/AppRun
+          chmod +x bundle/AppRun
+
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 ./appimagetool-x86_64.AppImage bundle ${{ env.APP_NAME }}-x86_64.AppImage
+
+      - name: Assemble Debian package
+        run: |
+          APP_VER=${{ needs.extract-metadata.outputs.app_version }}
+          mkdir -p pkg-deb/DEBIAN pkg-deb/usr/bin pkg-deb/usr/share/applications pkg-deb/usr/share/icons/hicolor/256x256/apps
+
+          cp target/release/${{ env.APP_NAME }} pkg-deb/usr/bin/
+          cp assets/icon.png pkg-deb/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
+
+          cat > pkg-deb/DEBIAN/control << CTRL
+          Package: ${{ env.APP_NAME }}
+          Version: ${APP_VER}
+          Section: video
+          Priority: optional
+          Architecture: amd64
+          Depends: gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly
+          Maintainer: Movix Contributors
+          Homepage: https://github.com/sapphirebluet/Movix
+          Description: Native desktop streaming client
+           A Rust-based streaming application featuring a Netflix-inspired
+           interface for browsing and playing movies and TV series.
+           Integrates with TMDB for metadata and uses GStreamer for playback.
+          CTRL
+
+          cat > pkg-deb/usr/share/applications/${{ env.APP_NAME }}.desktop << DESKTOP
+          [Desktop Entry]
+          Name=${{ env.DISPLAY_NAME }}
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Type=Application
+          Categories=AudioVideo;Video;
+          Comment=Native streaming client with Netflix-style interface
+          DESKTOP
+
+          dpkg-deb --build pkg-deb ${{ env.APP_NAME }}-amd64.deb
+
+      - name: Assemble RPM package
+        run: |
+          APP_VER=${{ needs.extract-metadata.outputs.app_version }}
+          mkdir -p rpm-workspace/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+          cp target/release/${{ env.APP_NAME }} rpm-workspace/SOURCES/
+          cp assets/icon.png rpm-workspace/SOURCES/${{ env.APP_NAME }}.png
+
+          cat > rpm-workspace/SOURCES/${{ env.APP_NAME }}.desktop << DESKTOP
+          [Desktop Entry]
+          Name=${{ env.DISPLAY_NAME }}
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Type=Application
+          Categories=AudioVideo;Video;
+          Comment=Native streaming client with Netflix-style interface
+          DESKTOP
+
+          cat > rpm-workspace/SPECS/${{ env.APP_NAME }}.spec << SPEC
+          Name: ${{ env.APP_NAME }}
+          Version: ${APP_VER}
+          Release: 1
+          Summary: Native desktop streaming client
+          License: MIT
+          URL: https://github.com/sapphirebluet/Movix
+
+          %description
+          A Rust-based streaming application featuring a Netflix-inspired
+          interface for browsing and playing movies and TV series.
+
+          %install
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/applications
+          mkdir -p %{buildroot}/usr/share/icons/hicolor/256x256/apps
+          install -m 755 %{_topdir}/SOURCES/${{ env.APP_NAME }} %{buildroot}/usr/bin/
+          install -m 644 %{_topdir}/SOURCES/${{ env.APP_NAME }}.desktop %{buildroot}/usr/share/applications/
+          install -m 644 %{_topdir}/SOURCES/${{ env.APP_NAME }}.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/
+
+          %files
+          /usr/bin/${{ env.APP_NAME }}
+          /usr/share/applications/${{ env.APP_NAME }}.desktop
+          /usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
+          SPEC
+
+          rpmbuild --define "_topdir $(pwd)/rpm-workspace" -bb rpm-workspace/SPECS/${{ env.APP_NAME }}.spec
+          cp rpm-workspace/RPMS/x86_64/*.rpm ${{ env.APP_NAME }}-x86_64.rpm
+
+      - name: Assemble Arch package
+        run: |
+          APP_VER=${{ needs.extract-metadata.outputs.app_version }}
+          mkdir -p pkg-arch/usr/bin pkg-arch/usr/share/applications pkg-arch/usr/share/icons/hicolor/256x256/apps
+
+          cp target/release/${{ env.APP_NAME }} pkg-arch/usr/bin/
+          cp assets/icon.png pkg-arch/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
+
+          cat > pkg-arch/usr/share/applications/${{ env.APP_NAME }}.desktop << DESKTOP
+          [Desktop Entry]
+          Name=${{ env.DISPLAY_NAME }}
+          Exec=${{ env.APP_NAME }}
+          Icon=${{ env.APP_NAME }}
+          Type=Application
+          Categories=AudioVideo;Video;
+          Comment=Native streaming client with Netflix-style interface
+          DESKTOP
+
+          cat > pkg-arch/.PKGINFO << PKGINFO
+          pkgname = ${{ env.APP_NAME }}
+          pkgver = ${APP_VER}-1
+          pkgdesc = Native desktop streaming client with Netflix-style interface
+          url = https://github.com/sapphirebluet/Movix
+          builddate = $(date +%s)
+          packager = GitHub Actions
+          size = $(stat -c%s target/release/${{ env.APP_NAME }})
+          arch = x86_64
+          license = MIT
+          depend = gstreamer
+          depend = gst-plugins-good
+          depend = gst-plugins-bad
+          depend = gst-plugins-ugly
+          PKGINFO
+
+          cd pkg-arch && tar -cJf ../${{ env.APP_NAME }}-x86_64.pkg.tar.zst .PKGINFO usr
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            ${{ env.APP_NAME }}-x86_64.AppImage
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
+
+  publish-release:
+    needs: [extract-metadata, compile-windows, compile-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.extract-metadata.outputs.app_version }}
+          name: ${{ env.DISPLAY_NAME }} v${{ needs.extract-metadata.outputs.app_version }}
+          files: dist/**/*
+          generate_release_notes: true
