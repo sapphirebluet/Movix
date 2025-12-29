@@ -254,6 +254,15 @@ On first launch, you'll be prompted to enter your TMDB API key and language pref
 
 ---
 
+## Publish
+
+```bash
+git tag -a v1.0.0 -m "Release version 1.0.0"
+git push origin v1.0.0
+```
+
+---
+
 ## License
 
 Movix: A native desktop streaming client.
