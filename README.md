@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/Iced-0.14-blue?style=for-the-badge" alt="Iced">
   <img src="https://img.shields.io/badge/GStreamer-Multimedia-green?style=for-the-badge&logo=gstreamer" alt="GStreamer">
   <img src="https://img.shields.io/badge/TMDB-API-01d277?style=for-the-badge&logo=themoviedatabase" alt="TMDB">
-  <img src="https://img.shields.io/badge/License-GPL-v3.0-yellow?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/License-GPL%20v3-blue?style=for-the-badge" alt="License">
 </p>
 
 <h3 align="center">Downloads</h3>
