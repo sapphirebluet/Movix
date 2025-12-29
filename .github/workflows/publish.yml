@@ -94,9 +94,12 @@ jobs:
             "gio-2.0-0.dll",
             "gmodule-2.0-0.dll",
             "intl-8.dll",
+            "ffi-7.dll",
             "ffi-8.dll",
+            "orc-0.4-0.dll",
             "pcre2-8-0.dll",
-            "z-1.dll"
+            "z-1.dll",
+            "zlib1.dll"
           )
           foreach ($dll in $dlls) {
             $src = Join-Path $gstBin $dll
