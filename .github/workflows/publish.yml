@@ -53,19 +53,9 @@ jobs:
           arch: ${{ matrix.arch == 'x86_64-pc-windows-msvc' && 'x64' || 'x86' }}
 
       - name: Install GStreamer
-        run: |
-          if ("${{ matrix.arch }}" -match "x86_64") {
-            $gstUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.10/msvc/gstreamer-1.0-msvc-x86_64-1.26.10.msi"
-            $gstDevUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.10/msvc/gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi"
-          } else {
-            $gstUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.10/msvc/gstreamer-1.0-msvc-x86-1.26.10.msi"
-            $gstDevUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/1.26.10/msvc/gstreamer-1.0-devel-msvc-x86-1.26.10.msi"
-          }
-          Invoke-WebRequest -Uri $gstUrl -OutFile gstreamer.msi
-          Invoke-WebRequest -Uri $gstDevUrl -OutFile gstreamer-devel.msi
-          Start-Process msiexec.exe -ArgumentList '/i', 'gstreamer.msi', '/quiet', '/norestart' -Wait
-          Start-Process msiexec.exe -ArgumentList '/i', 'gstreamer-devel.msi', '/quiet', '/norestart' -Wait
-        shell: pwsh
+        uses: blinemedical/setup-gstreamer@v1
+        with:
+          version: '1.24.10'
 
       - name: Set GStreamer environment
         run: |
@@ -74,9 +64,7 @@ jobs:
           } else {
             $gstRoot = "C:\gstreamer\1.0\msvc_x86"
           }
-          echo "GSTREAMER_1_0_ROOT_MSVC=$gstRoot" >> $env:GITHUB_ENV
           echo "PKG_CONFIG_PATH=$gstRoot\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "$gstRoot\bin" >> $env:GITHUB_PATH
         shell: pwsh
 
       - name: Provision NSIS
