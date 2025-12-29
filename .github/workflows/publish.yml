@@ -58,12 +58,6 @@ jobs:
             mingw-w64-ucrt-x86_64-gst-plugins-base
             mingw-w64-ucrt-x86_64-pkg-config
 
-      - name: Set GStreamer environment
-        shell: pwsh
-        run: |
-          echo "PKG_CONFIG_PATH=C:\msys64\ucrt64\lib\pkgconfig" >> $env:GITHUB_ENV
-          echo "C:\msys64\ucrt64\bin" >> $env:GITHUB_PATH
-
       - name: Provision NSIS
         run: choco install nsis -y
 
@@ -74,9 +68,14 @@ jobs:
         shell: cmd
 
       - name: Compile release binary
+        shell: pwsh
         env:
           RUSTFLAGS: -Clink-arg=assets/icon.res
-        run: cargo build --release --target x86_64-pc-windows-msvc
+          PKG_CONFIG_PATH: C:\msys64\ucrt64\lib\pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+          cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Prepare portable distribution
         run: |
