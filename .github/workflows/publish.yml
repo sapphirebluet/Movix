@@ -83,11 +83,7 @@ jobs:
             Copy-Item $ytdlpPath.FullName "portable\${{ env.APP_NAME }}\"
           }
           
-          # Only copy required FFmpeg DLLs (skip avfilter and avdevice - not used)
-          $requiredDlls = @("avcodec-*.dll", "avformat-*.dll", "avutil-*.dll", "swresample-*.dll", "swscale-*.dll")
-          foreach ($pattern in $requiredDlls) {
-            Copy-Item "$ffmpegBin\$pattern" "portable\${{ env.APP_NAME }}\" -ErrorAction SilentlyContinue
-          }
+          Copy-Item "$ffmpegBin\*.dll" "portable\${{ env.APP_NAME }}\" -ErrorAction SilentlyContinue
           
           New-Item -ItemType Directory -Force -Path output
           Compress-Archive -Path "portable\${{ env.APP_NAME }}" -DestinationPath "output\${{ env.APP_NAME }}-windows-x64-portable.zip"
@@ -122,12 +118,7 @@ jobs:
             File "assets\icon.ico"
             
             File /nonfatal "portable\${{ env.APP_NAME }}\yt-dlp.exe"
-            ; Only include required FFmpeg DLLs (avcodec, avformat, avutil, swresample, swscale)
-            File /nonfatal "portable\${{ env.APP_NAME }}\avcodec-*.dll"
-            File /nonfatal "portable\${{ env.APP_NAME }}\avformat-*.dll"
-            File /nonfatal "portable\${{ env.APP_NAME }}\avutil-*.dll"
-            File /nonfatal "portable\${{ env.APP_NAME }}\swresample-*.dll"
-            File /nonfatal "portable\${{ env.APP_NAME }}\swscale-*.dll"
+            File /nonfatal "portable\${{ env.APP_NAME }}\*.dll"
             
             SetOutPath "`$INSTDIR"
 
@@ -149,11 +140,7 @@ jobs:
             Delete "`$INSTDIR\${{ env.APP_NAME }}.exe"
             Delete "`$INSTDIR\yt-dlp.exe"
             Delete "`$INSTDIR\icon.ico"
-            Delete "`$INSTDIR\avcodec-*.dll"
-            Delete "`$INSTDIR\avformat-*.dll"
-            Delete "`$INSTDIR\avutil-*.dll"
-            Delete "`$INSTDIR\swresample-*.dll"
-            Delete "`$INSTDIR\swscale-*.dll"
+            Delete "`$INSTDIR\*.dll"
             Delete "`$INSTDIR\uninstall.exe"
             RMDir "`$INSTDIR"
 
