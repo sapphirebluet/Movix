@@ -50,9 +50,12 @@ jobs:
 
       - name: Install FFmpeg
         run: |
-          choco install ffmpeg-full -y
-          $env:FFMPEG_DIR = "C:\ProgramData\chocolatey\lib\ffmpeg-full\tools\ffmpeg"
-          echo "FFMPEG_DIR=$env:FFMPEG_DIR" >> $env:GITHUB_ENV
+          $ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/8.0.1/ffmpeg-8.0.1-full_build-shared.zip"
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath C:\ffmpeg-build
+          $ffmpegDir = (Get-ChildItem -Path C:\ffmpeg-build -Directory | Select-Object -First 1).FullName
+          echo "FFMPEG_DIR=$ffmpegDir" >> $env:GITHUB_ENV
+          echo "$ffmpegDir\bin" >> $env:GITHUB_PATH
 
       - name: Provision NSIS
         run: choco install nsis -y
@@ -70,7 +73,7 @@ jobs:
 
       - name: Prepare portable distribution
         run: |
-          $ffmpegBin = "C:\ProgramData\chocolatey\lib\ffmpeg-full\tools\ffmpeg\bin"
+          $ffmpegBin = "$env:FFMPEG_DIR\bin"
           New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}"
           
           Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "portable\${{ env.APP_NAME }}\"
@@ -171,7 +174,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev \
             libswscale-dev libavfilter-dev libavdevice-dev \
-            libclang-dev pkg-config rpm
+            libclang-dev pkg-config rpm libasound2-dev
 
       - name: Compile release binary
         run: cargo build --release
