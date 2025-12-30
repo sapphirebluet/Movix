@@ -455,17 +455,15 @@ impl Movix {
         h: f32,
     ) -> Element<'_, Message> {
         if let Some(ref frame) = self.detail_video_frame {
-            if let Ok(player) = self.detail_player.try_lock() {
-                if player.current_media_id() == Some(media_item.id) {
-                    return container(
-                        iced::widget::image(frame.clone())
-                            .width(Length::Fixed(w))
-                            .height(Length::Fixed(h))
-                            .content_fit(iced::ContentFit::Cover),
-                    )
-                    .style(|_| rounded_style(8.0, None))
-                    .into();
-                }
+            if self.detail_player.current_media_id() == Some(media_item.id) {
+                return container(
+                    iced::widget::image(frame.clone())
+                        .width(Length::Fixed(w))
+                        .height(Length::Fixed(h))
+                        .content_fit(iced::ContentFit::Cover),
+                )
+                .style(|_| rounded_style(8.0, None))
+                .into();
             }
         }
         self.view_card_backdrop(media_item, w, h)

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
 use tokio::sync::Mutex;
 
-use gstreamer as gst;
-use gstreamer::prelude::*;
 use iced::widget::{button, column, container, row, slider, text, Space};
 use iced::{Border, Color, Element, Length, Padding, Shadow};
+use rodio::Sink;
 
 use crate::media::{MediaId, Message, NETFLIX_RED, TEXT_GRAY, TEXT_WHITE};
 use crate::streaming;
@@ -27,21 +28,43 @@ pub struct FrameData {
     pub data: Vec<u8>,
 }
 
-struct SharedFrame {
-    current: Option<FrameData>,
-    pending: Option<FrameData>,
+enum PlayerCommand {
+    Pause,
+    Resume,
+    SetVolume(f32),
+    Shutdown,
+}
+
+struct SharedState {
+    position: AtomicU64,
+    duration: AtomicU64,
+    is_ended: AtomicBool,
+}
+
+impl SharedState {
+    fn new() -> Self {
+        Self {
+            position: AtomicU64::new(0),
+            duration: AtomicU64::new(0),
+            is_ended: AtomicBool::new(false),
+        }
+    }
 }
 
 pub struct MoviePlayer {
-    pipeline: Option<gst::Pipeline>,
-    playbin: Option<gst::Element>,
     current_media_id: Option<MediaId>,
-    shared_frame: Arc<RwLock<SharedFrame>>,
+    current_frame: Option<FrameData>,
+    frame_receiver: Option<crossbeam_channel::Receiver<FrameData>>,
+    command_sender: Option<crossbeam_channel::Sender<PlayerCommand>>,
+    decoder_thread: Option<thread::JoinHandle<()>>,
+    shared_state: Arc<SharedState>,
     is_playing: bool,
     is_muted: bool,
-    volume: f64,
+    volume: f32,
     current_url: Option<String>,
     progress_store: Arc<Mutex<PlaybackProgressStore>>,
+    target_width: u32,
+    target_height: u32,
 }
 
 #[derive(Clone, Default)]
@@ -52,24 +75,14 @@ pub struct PlaybackProgressStore {
 
 impl PlaybackProgressStore {
     pub fn new() -> Self {
-        #[cfg(target_os = "windows")]
-        let storage_path = std::env::var("APPDATA").ok().map(|appdata| {
-            PathBuf::from(appdata)
-                .join("movix")
-                .join("playback_progress.json")
-        });
-
-        #[cfg(not(target_os = "windows"))]
         let storage_path = std::env::var("HOME")
             .ok()
             .map(|home| PathBuf::from(home).join(".local/share/movix/playback_progress.json"));
-
         if let Some(ref path) = storage_path {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
         }
-
         let mut store = Self {
             progress: HashMap::new(),
             storage_path,
@@ -82,9 +95,6 @@ impl PlaybackProgressStore {
         let Some(ref path) = self.storage_path else {
             return;
         };
-        if !path.exists() {
-            return;
-        }
         if let Ok(content) = std::fs::read_to_string(path) {
             if let Ok(data) = serde_json::from_str(&content) {
                 self.progress = data;
@@ -113,158 +123,71 @@ impl PlaybackProgressStore {
 
 impl MoviePlayer {
     pub fn new(progress_store: Arc<Mutex<PlaybackProgressStore>>) -> Result<Self, String> {
-        gst::init().map_err(|e| format!("Failed to init GStreamer: {}", e))?;
+        ffmpeg_next::init().map_err(|e| format!("FFmpeg init failed: {}", e))?;
         Ok(Self {
-            pipeline: None,
-            playbin: None,
             current_media_id: None,
-            shared_frame: Arc::new(RwLock::new(SharedFrame {
-                current: None,
-                pending: None,
-            })),
+            current_frame: None,
+            frame_receiver: None,
+            command_sender: None,
+            decoder_thread: None,
+            shared_state: Arc::new(SharedState::new()),
             is_playing: false,
             is_muted: false,
             volume: 1.0,
             current_url: None,
             progress_store,
+            target_width: 1920,
+            target_height: 1080,
         })
     }
 
     pub fn play(&mut self, media_id: MediaId, url: &str) -> Result<(), String> {
         self.stop();
+        let (frame_tx, frame_rx) = crossbeam_channel::bounded(4);
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let url_clone = url.to_string();
+        let width = self.target_width;
+        let height = self.target_height;
+        let shared = Arc::new(SharedState::new());
+        self.shared_state = shared.clone();
 
-        let pipeline = gst::Pipeline::new();
+        let handle = thread::spawn(move || {
+            run_movie_decoder(url_clone, width, height, frame_tx, cmd_rx, shared);
+        });
 
-        let playbin = gst::ElementFactory::make("playbin3")
-            .property("uri", url)
-            .property("buffer-size", 4 * 1024 * 1024i32)
-            .property("buffer-duration", 5_000_000_000i64)
-            .build()
-            .map_err(|e| format!("Failed to create playbin3: {}", e))?;
-
-        let video_sink = self.create_video_sink()?;
-
-        playbin.set_property("video-sink", &video_sink);
-        playbin.set_property("volume", self.volume);
-        playbin.set_property("mute", self.is_muted);
-
-        pipeline
-            .add(&playbin)
-            .map_err(|e| format!("Failed to add: {}", e))?;
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| format!("Failed: {:?}", e))?;
-
-        self.playbin = Some(playbin);
-        self.pipeline = Some(pipeline);
+        self.frame_receiver = Some(frame_rx);
+        self.command_sender = Some(cmd_tx);
+        self.decoder_thread = Some(handle);
         self.current_media_id = Some(media_id);
         self.current_url = Some(url.to_string());
         self.is_playing = true;
         Ok(())
     }
 
-    fn create_video_sink(&self) -> Result<gst::Element, String> {
-        let bin = gst::Bin::new();
-
-        let queue = gst::ElementFactory::make("queue")
-            .property("max-size-buffers", 3u32)
-            .property("max-size-time", 0u64)
-            .property("max-size-bytes", 0u32)
-            .build()
-            .map_err(|e| format!("queue: {}", e))?;
-
-        let convert = gst::ElementFactory::make("videoconvert")
-            .build()
-            .map_err(|e| format!("videoconvert: {}", e))?;
-
-        let caps = gst::ElementFactory::make("capsfilter")
-            .property(
-                "caps",
-                gst::Caps::builder("video/x-raw")
-                    .field("format", "RGBA")
-                    .build(),
-            )
-            .build()
-            .map_err(|e| format!("capsfilter: {}", e))?;
-
-        let sink = gst::ElementFactory::make("appsink")
-            .property("emit-signals", true)
-            .property("sync", true)
-            .property("max-buffers", 1u32)
-            .property("drop", true)
-            .build()
-            .map_err(|e| format!("appsink: {}", e))?;
-
-        bin.add_many([&queue, &convert, &caps, &sink])
-            .map_err(|e| format!("add: {}", e))?;
-        gst::Element::link_many([&queue, &convert, &caps, &sink])
-            .map_err(|e| format!("link: {}", e))?;
-
-        let pad = queue.static_pad("sink").ok_or("no pad")?;
-        bin.add_pad(&gst::GhostPad::with_target(&pad).map_err(|e| format!("ghost: {}", e))?)
-            .map_err(|e| format!("add pad: {}", e))?;
-
-        let appsink = sink
-            .downcast::<gstreamer_app::AppSink>()
-            .map_err(|_| "downcast")?;
-
-        let shared = self.shared_frame.clone();
-
-        appsink.set_callbacks(
-            gstreamer_app::AppSinkCallbacks::builder()
-                .new_sample(move |s| {
-                    let sample = s.pull_sample().map_err(|_| gst::FlowError::Error)?;
-                    let buf = sample.buffer().ok_or(gst::FlowError::Error)?;
-                    let caps = sample.caps().ok_or(gst::FlowError::Error)?;
-                    let info = gstreamer_video::VideoInfo::from_caps(caps)
-                        .map_err(|_| gst::FlowError::Error)?;
-                    let map = buf.map_readable().map_err(|_| gst::FlowError::Error)?;
-
-                    let expected_size = (info.width() * info.height() * 4) as usize;
-                    if map.len() < expected_size {
-                        return Ok(gst::FlowSuccess::Ok);
-                    }
-
-                    let frame = FrameData {
-                        width: info.width(),
-                        height: info.height(),
-                        data: map.as_slice().to_vec(),
-                    };
-
-                    if let Ok(mut guard) = shared.write() {
-                        guard.pending = Some(frame);
-                    }
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-        Ok(bin.upcast())
-    }
-
     pub fn stop(&mut self) {
-        if let Some(p) = self.pipeline.take() {
-            let _ = p.set_state(gst::State::Null);
+        if let Some(sender) = self.command_sender.take() {
+            let _ = sender.send(PlayerCommand::Shutdown);
         }
-        self.playbin = None;
+        if let Some(handle) = self.decoder_thread.take() {
+            let _ = handle.join();
+        }
+        self.frame_receiver = None;
         self.current_media_id = None;
         self.current_url = None;
         self.is_playing = false;
-        if let Ok(mut guard) = self.shared_frame.write() {
-            guard.current = None;
-            guard.pending = None;
-        }
+        self.current_frame = None;
     }
 
     pub fn pause(&mut self) {
-        if let Some(ref p) = self.pipeline {
-            let _ = p.set_state(gst::State::Paused);
+        if let Some(ref sender) = self.command_sender {
+            let _ = sender.send(PlayerCommand::Pause);
         }
         self.is_playing = false;
     }
 
     pub fn resume(&mut self) {
-        if let Some(ref p) = self.pipeline {
-            let _ = p.set_state(gst::State::Playing);
+        if let Some(ref sender) = self.command_sender {
+            let _ = sender.send(PlayerCommand::Resume);
         }
         self.is_playing = true;
     }
@@ -282,24 +205,30 @@ impl MoviePlayer {
     }
 
     pub fn has_pipeline(&self) -> bool {
-        self.pipeline.is_some()
+        self.decoder_thread.is_some()
+    }
+
+    pub fn current_media_id(&self) -> Option<MediaId> {
+        self.current_media_id
     }
 
     pub fn set_volume(&mut self, v: f64) {
-        self.volume = v.clamp(0.0, 1.0);
-        if let Some(ref pb) = self.playbin {
-            pb.set_property("volume", self.volume);
+        self.volume = v.clamp(0.0, 1.0) as f32;
+        if let Some(ref sender) = self.command_sender {
+            let vol = if self.is_muted { 0.0 } else { self.volume };
+            let _ = sender.send(PlayerCommand::SetVolume(vol));
         }
     }
 
     pub fn volume(&self) -> f64 {
-        self.volume
+        self.volume as f64
     }
 
     pub fn toggle_mute(&mut self) {
         self.is_muted = !self.is_muted;
-        if let Some(ref pb) = self.playbin {
-            pb.set_property("mute", self.is_muted);
+        if let Some(ref sender) = self.command_sender {
+            let vol = if self.is_muted { 0.0 } else { self.volume };
+            let _ = sender.send(PlayerCommand::SetVolume(vol));
         }
     }
 
@@ -307,52 +236,25 @@ impl MoviePlayer {
         self.is_muted
     }
 
-    pub fn seek(&mut self, pos: f64) {
-        if let Some(ref p) = self.pipeline {
-            let _ = p.seek_simple(
-                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                gst::ClockTime::from_seconds_f64(pos),
-            );
-        }
-    }
-
-    pub fn seek_relative(&mut self, delta: f64) {
-        self.seek((self.position() + delta).clamp(0.0, self.duration()));
-    }
+    pub fn seek(&mut self, _pos: f64) {}
+    pub fn seek_relative(&mut self, _delta: f64) {}
 
     pub fn position(&self) -> f64 {
-        self.pipeline
-            .as_ref()
-            .and_then(|p| p.query_position::<gst::ClockTime>())
-            .map(|t| t.seconds_f64())
-            .unwrap_or(0.0)
+        f64::from_bits(self.shared_state.position.load(Ordering::SeqCst))
     }
 
     pub fn duration(&self) -> f64 {
-        self.pipeline
-            .as_ref()
-            .and_then(|p| p.query_duration::<gst::ClockTime>())
-            .map(|t| t.seconds_f64())
-            .unwrap_or(0.0)
+        f64::from_bits(self.shared_state.duration.load(Ordering::SeqCst))
     }
 
     pub fn check_ended(&self) -> bool {
-        self.pipeline.as_ref().map_or(false, |p| {
-            p.bus().map_or(false, |bus| {
-                while let Some(msg) = bus.pop() {
-                    if matches!(msg.view(), gst::MessageView::Eos(_)) {
-                        return true;
-                    }
-                }
-                false
-            })
-        })
+        self.shared_state.is_ended.load(Ordering::SeqCst)
     }
 
     pub fn get_new_frame(&mut self) -> Option<FrameData> {
-        let mut guard = self.shared_frame.write().ok()?;
-        if let Some(frame) = guard.pending.take() {
-            guard.current = Some(FrameData {
+        let receiver = self.frame_receiver.as_ref()?;
+        if let Ok(frame) = receiver.try_recv() {
+            self.current_frame = Some(FrameData {
                 width: frame.width,
                 height: frame.height,
                 data: frame.data.clone(),
@@ -363,21 +265,26 @@ impl MoviePlayer {
     }
 
     pub fn get_current_frame(&self) -> Option<FrameData> {
-        let guard = self.shared_frame.read().ok()?;
-        guard.current.as_ref().map(|f| FrameData {
+        self.current_frame.as_ref().map(|f| FrameData {
             width: f.width,
             height: f.height,
             data: f.data.clone(),
         })
     }
 
-    pub async fn save_progress(&self) {
+    pub fn save_progress_sync(&self) {
         if let Some(id) = self.current_media_id {
             let pos = self.position();
             if pos > 5.0 {
-                self.progress_store.lock().await.set(id, pos);
+                if let Ok(mut store) = self.progress_store.try_lock() {
+                    store.set(id, pos);
+                }
             }
         }
+    }
+
+    pub fn get_stored_position(&self, media_id: MediaId) -> Option<f64> {
+        self.progress_store.try_lock().ok()?.get(media_id)
     }
 }
 
@@ -385,6 +292,186 @@ impl Drop for MoviePlayer {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+fn run_movie_decoder(
+    url: String,
+    target_width: u32,
+    target_height: u32,
+    frame_sender: crossbeam_channel::Sender<FrameData>,
+    command_receiver: crossbeam_channel::Receiver<PlayerCommand>,
+    shared_state: Arc<SharedState>,
+) {
+    let (_stream, sink) = match create_audio_output() {
+        Some(s) => s,
+        None => {
+            shared_state.is_ended.store(true, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let mut ictx = match ffmpeg_next::format::input(&url) {
+        Ok(ctx) => ctx,
+        Err(_) => {
+            shared_state.is_ended.store(true, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let duration_secs = ictx.duration() as f64 / f64::from(ffmpeg_next::ffi::AV_TIME_BASE);
+    shared_state
+        .duration
+        .store(duration_secs.to_bits(), Ordering::SeqCst);
+
+    let video_stream = ictx.streams().best(ffmpeg_next::media::Type::Video);
+    let audio_stream = ictx.streams().best(ffmpeg_next::media::Type::Audio);
+    let video_index = video_stream.as_ref().map(|s| s.index());
+    let audio_index = audio_stream.as_ref().map(|s| s.index());
+    let video_time_base = video_stream.as_ref().map(|s| s.time_base());
+
+    let mut video_decoder = video_stream.and_then(|s| {
+        ffmpeg_next::codec::context::Context::from_parameters(s.parameters())
+            .ok()?
+            .decoder()
+            .video()
+            .ok()
+    });
+
+    let mut audio_decoder = audio_stream.and_then(|s| {
+        ffmpeg_next::codec::context::Context::from_parameters(s.parameters())
+            .ok()?
+            .decoder()
+            .audio()
+            .ok()
+    });
+
+    let mut scaler = video_decoder.as_ref().and_then(|dec| {
+        ffmpeg_next::software::scaling::Context::get(
+            dec.format(),
+            dec.width(),
+            dec.height(),
+            ffmpeg_next::format::Pixel::RGBA,
+            target_width,
+            target_height,
+            ffmpeg_next::software::scaling::Flags::BILINEAR,
+        )
+        .ok()
+    });
+
+    let mut resampler = audio_decoder.as_ref().and_then(|dec| {
+        ffmpeg_next::software::resampling::Context::get(
+            dec.format(),
+            dec.channel_layout(),
+            dec.rate(),
+            ffmpeg_next::format::Sample::I16(ffmpeg_next::format::sample::Type::Packed),
+            ffmpeg_next::ChannelLayout::STEREO,
+            44100,
+        )
+        .ok()
+    });
+
+    let playback_start = std::time::Instant::now();
+    let mut pause_offset = std::time::Duration::ZERO;
+    let mut pause_start: Option<std::time::Instant> = None;
+    let mut is_paused = false;
+
+    for (pkt_stream, packet) in ictx.packets() {
+        while let Ok(cmd) = command_receiver.try_recv() {
+            match cmd {
+                PlayerCommand::Shutdown => return,
+                PlayerCommand::Pause => {
+                    is_paused = true;
+                    pause_start = Some(std::time::Instant::now());
+                    sink.pause();
+                }
+                PlayerCommand::Resume => {
+                    is_paused = false;
+                    if let Some(ps) = pause_start.take() {
+                        pause_offset += ps.elapsed();
+                    }
+                    sink.play();
+                }
+                PlayerCommand::SetVolume(v) => sink.set_volume(v),
+            }
+        }
+
+        if is_paused {
+            thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+
+        let stream_index = pkt_stream.index();
+
+        if Some(stream_index) == audio_index {
+            if let (Some(ref mut decoder), Some(ref mut resamp)) =
+                (&mut audio_decoder, &mut resampler)
+            {
+                if decoder.send_packet(&packet).is_ok() {
+                    let mut decoded = ffmpeg_next::frame::Audio::empty();
+                    while decoder.receive_frame(&mut decoded).is_ok() {
+                        let mut resampled = ffmpeg_next::frame::Audio::empty();
+                        if resamp.run(&decoded, &mut resampled).is_ok() {
+                            let data = resampled.data(0);
+                            let samples: Vec<f32> = data
+                                .chunks_exact(2)
+                                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                                .collect();
+                            let source = rodio::buffer::SamplesBuffer::new(2, 44100, samples);
+                            sink.append(source);
+                        }
+                    }
+                }
+            }
+        }
+
+        if Some(stream_index) == video_index {
+            if let Some(ref mut decoder) = video_decoder {
+                if decoder.send_packet(&packet).is_ok() {
+                    let mut decoded = ffmpeg_next::frame::Video::empty();
+                    while decoder.receive_frame(&mut decoded).is_ok() {
+                        if let Some(tb) = video_time_base {
+                            let pts = decoded.pts().unwrap_or(0);
+                            let pos = pts as f64 * f64::from(tb);
+                            shared_state.position.store(pos.to_bits(), Ordering::SeqCst);
+                        }
+                        if let Some(ref mut sc) = scaler {
+                            let mut rgb = ffmpeg_next::frame::Video::empty();
+                            if sc.run(&decoded, &mut rgb).is_ok() {
+                                if let Some(tb) = video_time_base {
+                                    let pts = decoded.pts().unwrap_or(0);
+                                    let frame_time = std::time::Duration::from_secs_f64(
+                                        pts as f64 * f64::from(tb),
+                                    );
+                                    let elapsed = playback_start.elapsed() - pause_offset;
+                                    if frame_time > elapsed {
+                                        thread::sleep(frame_time - elapsed);
+                                    }
+                                }
+                                let frame = FrameData {
+                                    width: target_width,
+                                    height: target_height,
+                                    data: rgb.data(0).to_vec(),
+                                };
+                                if frame_sender.send(frame).is_err() {
+                                    shared_state.is_ended.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    sink.sleep_until_end();
+    shared_state.is_ended.store(true, Ordering::SeqCst);
+}
+
+fn create_audio_output() -> Option<(std::mem::ManuallyDrop<rodio::OutputStream>, Sink)> {
+    let stream = rodio::OutputStreamBuilder::open_default_stream().ok()?;
+    let sink = Sink::connect_new(stream.mixer());
+    Some((std::mem::ManuallyDrop::new(stream), sink))
 }
 
 pub struct VoeStreamResolver;
@@ -421,7 +508,6 @@ impl Movix {
     pub fn view_movie_player_overlay(&self) -> Element<'_, Message> {
         let video = self.view_movie_video();
         let controls = self.view_movie_controls_overlay();
-
         iced::widget::stack![video, controls]
             .width(Length::Fill)
             .height(Length::Fill)
@@ -503,7 +589,6 @@ impl Movix {
                 .height(Length::Fill)
                 .into();
         }
-
         let back_btn = button(icon(ICON_ARROW_LEFT).size(24).color(TEXT_WHITE))
             .padding(Padding::new(12.0))
             .style(|_, status| button::Style {
@@ -526,13 +611,10 @@ impl Movix {
                 snap: false,
             })
             .on_press(Message::MoviePlayerClose);
-
         let top = container(back_btn)
             .width(Length::Fill)
             .padding(Padding::new(16.0));
-
         let bottom = self.view_movie_bottom_controls();
-
         column![
             top,
             Space::new().width(Length::Fill).height(Length::Fill),
@@ -547,7 +629,6 @@ impl Movix {
         let time_cur = format_time(self.movie_player_position);
         let time_tot = format_time(self.movie_player_duration);
         let max_dur = self.movie_player_duration.max(1.0);
-
         let slider_widget = slider(
             0.0..=max_dur,
             self.movie_player_position,
@@ -571,7 +652,6 @@ impl Movix {
                 border_color: Color::TRANSPARENT,
             },
         });
-
         let progress_row = row![
             text(time_cur).size(12).color(TEXT_WHITE),
             slider_widget,
@@ -590,7 +670,6 @@ impl Movix {
         } else {
             ICON_VOLUME_UP_FILL
         };
-
         let vol_slider = slider(
             0.0..=1.0,
             self.movie_player_volume,
@@ -614,9 +693,7 @@ impl Movix {
                 border_color: Color::TRANSPARENT,
             },
         });
-
         let title = self.movie_player_title.clone().unwrap_or_default();
-
         let left = row![
             self.ctrl_btn(play_icon, Message::MoviePlayerTogglePlay),
             self.ctrl_btn(
@@ -632,17 +709,13 @@ impl Movix {
         ]
         .spacing(4)
         .align_y(iced::Alignment::Center);
-
         let center = container(text(title).size(14).color(TEXT_WHITE))
             .width(Length::Fill)
             .center_x(Length::Fill);
-
         let right = self.ctrl_btn(ICON_FULLSCREEN, Message::MoviePlayerToggleFullscreen);
-
         let controls_row = row![left, center, right]
             .align_y(iced::Alignment::Center)
             .width(Length::Fill);
-
         container(
             column![progress_row, controls_row]
                 .spacing(8)

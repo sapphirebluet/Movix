@@ -62,6 +62,9 @@ pub fn handle_message(app: &mut Movix, message: Message) -> Task<Message> {
         Message::HeroFrameTick => player_handlers::handle_hero_frame_tick(app),
         Message::CardFrameTick => player_handlers::handle_card_frame_tick(app),
         Message::StopCardTrailer => player_handlers::handle_stop_card_trailer(app),
+        Message::PlayCardTrailer(id) => player_handlers::handle_play_card_trailer(app, id),
+        Message::PlayHeroTrailer(id) => player_handlers::handle_play_hero_trailer(app, id),
+        Message::PlayDetailTrailer(id) => player_handlers::handle_play_detail_trailer(app, id),
         Message::PauseHeroTrailer => player_handlers::handle_pause_hero_trailer(app),
         Message::ResumeHeroTrailer => player_handlers::handle_resume_hero_trailer(app),
         Message::HeroVisibilityChanged(visible) => handle_hero_visibility(app, visible),
@@ -318,9 +321,9 @@ fn handle_content_loaded(
 
 fn handle_hero_loaded(
     app: &mut Movix,
-    result: Result<crate::media::MediaItem, ApiError>,
+    result: Box<Result<crate::media::MediaItem, ApiError>>,
 ) -> Task<Message> {
-    match result {
+    match *result {
         Ok(item) => {
             app.hero_content = Some(item.clone());
             let image_task = app.load_hero_images(&item);
@@ -418,7 +421,9 @@ fn handle_retry_load(app: &mut Movix) -> Task<Message> {
     let hero_client = client.clone();
     Task::batch([
         Task::perform(load_initial_content(content_client), Message::ContentLoaded),
-        Task::perform(load_hero_content(hero_client), Message::HeroLoaded),
+        Task::perform(load_hero_content(hero_client), |r| {
+            Message::HeroLoaded(Box::new(r))
+        }),
     ])
 }
 

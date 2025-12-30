@@ -2,7 +2,6 @@ use iced::Task;
 
 use crate::media::{ApiError, MediaId, Message};
 use crate::tmdb::ImageSize;
-use crate::video::VideoPlayer;
 use crate::Movix;
 
 pub fn handle_open_detail_popup(app: &mut Movix, media_id: MediaId) -> Task<Message> {
@@ -37,25 +36,16 @@ pub fn handle_open_detail_popup(app: &mut Movix, media_id: MediaId) -> Task<Mess
                 .fetch_detail_popup_data(media_id, &media_type)
                 .await
         },
-        Message::DetailDataLoaded,
+        |result| Message::DetailDataLoaded(Box::new(result)),
     );
 
-    let mut tasks = vec![
-        Task::done(Message::PauseHeroTrailer),
-        Task::done(Message::StopCardTrailer),
-        fetch_task,
-    ];
+    app.hero_player.pause();
+    app.card_player.stop();
 
-    if let Some(url) = app.stream_url_cache.get(&media_id) {
-        let player = app.detail_player.clone();
-        let url = url.clone();
-        tasks.push(Task::perform(
-            async move {
-                let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = player.lock().await;
-                let _ = p.play(media_id, &url);
-            },
-            |_| Message::DetailFrameTick,
-        ));
+    let mut tasks = vec![fetch_task];
+
+    if app.stream_url_cache.contains_key(&media_id) {
+        tasks.push(Task::done(Message::PlayDetailTrailer(media_id)));
     } else if let Some(Some(youtube_id)) = app.trailer_cache.get(&media_id) {
         let manager = app.trailer_manager.clone();
         let yt_id = youtube_id.clone();
@@ -81,48 +71,27 @@ pub fn handle_close_detail_popup(app: &mut Movix) -> Task<Message> {
     app.pending_detail_hover_card = None;
     app.detail_video_frame = None;
 
-    let detail_player = app.detail_player.clone();
-    let stop_detail = Task::perform(
-        async move {
-            let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = detail_player.lock().await;
-            p.stop();
-        },
-        |_| Message::DetailFrameTick,
-    );
+    app.detail_player.stop();
 
     if !should_resume_hero {
-        return stop_detail;
+        return Task::none();
     }
 
     if was_hero_ended {
-        let hero_player = app.hero_player.clone();
-        let replay_hero = Task::perform(
-            async move {
-                let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = hero_player.lock().await;
-                let _ = p.replay();
-            },
-            |_| Message::HeroFrameTick,
-        );
         app.hero_ended = false;
-        return Task::batch([stop_detail, replay_hero]);
+        let _ = app.hero_player.replay();
+        return Task::none();
     }
 
-    let hero_player = app.hero_player.clone();
-    let resume_hero = Task::perform(
-        async move {
-            let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = hero_player.lock().await;
-            p.resume();
-        },
-        |_| Message::HeroFrameTick,
-    );
-    Task::batch([stop_detail, resume_hero])
+    app.hero_player.resume();
+    Task::none()
 }
 
 pub fn handle_detail_data_loaded(
     app: &mut Movix,
-    result: Result<crate::media::DetailPopupData, ApiError>,
+    result: Box<Result<crate::media::DetailPopupData, ApiError>>,
 ) -> Task<Message> {
-    let Ok(data) = result else {
+    let Ok(data) = *result else {
         return Task::none();
     };
 
@@ -279,33 +248,19 @@ pub fn handle_detail_hover_card(app: &mut Movix, id: Option<MediaId>) -> Task<Me
     match id {
         Some(media_id) => {
             app.pending_detail_hover_card = Some(media_id);
-            let player = app.detail_player.clone();
-            let stop_task = Task::perform(
-                async move {
-                    let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = player.lock().await;
-                    p.stop();
-                },
-                |_| Message::DetailFrameTick,
-            );
-            let delay_task = Task::perform(
+            app.detail_player.stop();
+            app.detail_video_frame = None;
+            Task::perform(
                 async { tokio::time::sleep(std::time::Duration::from_millis(300)).await },
                 move |_| Message::DetailHoverCardDelayed(media_id),
-            );
-            app.detail_video_frame = None;
-            Task::batch([stop_task, delay_task])
+            )
         }
         None => {
             app.pending_detail_hover_card = None;
             app.detail_hovered_card = None;
             app.detail_video_frame = None;
-            let player = app.detail_player.clone();
-            Task::perform(
-                async move {
-                    let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = player.lock().await;
-                    p.stop();
-                },
-                |_| Message::DetailFrameTick,
-            )
+            app.detail_player.stop();
+            Task::none()
         }
     }
 }
@@ -351,16 +306,8 @@ pub fn handle_detail_hover_card_delayed(app: &mut Movix, media_id: MediaId) -> T
         }
     }
 
-    if let Some(url) = app.stream_url_cache.get(&media_id) {
-        let player = app.detail_player.clone();
-        let url = url.clone();
-        tasks.push(Task::perform(
-            async move {
-                let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = player.lock().await;
-                let _ = p.play(media_id, &url);
-            },
-            |_| Message::DetailFrameTick,
-        ));
+    if app.stream_url_cache.contains_key(&media_id) {
+        tasks.push(Task::done(Message::PlayDetailTrailer(media_id)));
     } else if let Some(Some(youtube_id)) = app.trailer_cache.get(&media_id) {
         let manager = app.trailer_manager.clone();
         let yt_id = youtube_id.clone();
@@ -381,14 +328,12 @@ pub fn handle_detail_hover_card_delayed(app: &mut Movix, media_id: MediaId) -> T
 }
 
 pub fn handle_detail_frame_tick(app: &mut Movix) -> Task<Message> {
-    if let Ok(player) = app.detail_player.try_lock() {
-        if let Some(frame) = player.get_frame() {
-            app.detail_video_frame = Some(iced::widget::image::Handle::from_rgba(
-                frame.width,
-                frame.height,
-                frame.data,
-            ));
-        }
+    if let Some(frame) = app.detail_player.render_frame() {
+        app.detail_video_frame = Some(iced::widget::image::Handle::from_rgba(
+            frame.width,
+            frame.height,
+            frame.data,
+        ));
     }
     Task::none()
 }
@@ -401,7 +346,7 @@ pub fn handle_detail_trailer_loaded(
     let Ok(url) = result else {
         return Task::none();
     };
-    app.stream_url_cache.insert(media_id, url.clone());
+    app.stream_url_cache.insert(media_id, url);
 
     let is_detail_main = app.detail_popup_media_id == Some(media_id);
     let is_detail_hovered = app.detail_hovered_card == Some(media_id);
@@ -410,12 +355,5 @@ pub fn handle_detail_trailer_loaded(
         return Task::none();
     }
 
-    let player = app.detail_player.clone();
-    Task::perform(
-        async move {
-            let mut p: tokio::sync::MutexGuard<'_, VideoPlayer> = player.lock().await;
-            let _ = p.play(media_id, &url);
-        },
-        |_| Message::DetailFrameTick,
-    )
+    Task::done(Message::PlayDetailTrailer(media_id))
 }

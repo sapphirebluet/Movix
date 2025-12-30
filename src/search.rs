@@ -196,23 +196,21 @@ impl Movix {
         h: f32,
     ) -> Element<'_, Message> {
         if let Some(ref frame) = self.card_video_frame {
-            if let Ok(player) = self.card_player.try_lock() {
-                if player.current_media_id() == Some(media_item.id) {
-                    return container(
-                        iced::widget::image(frame.clone())
-                            .width(Length::Fixed(w))
-                            .height(Length::Fixed(h))
-                            .content_fit(iced::ContentFit::Cover),
-                    )
-                    .style(|_| container::Style {
-                        border: Border {
-                            radius: 8.0.into(),
-                            ..Default::default()
-                        },
+            if self.card_player.current_media_id() == Some(media_item.id) {
+                return container(
+                    iced::widget::image(frame.clone())
+                        .width(Length::Fixed(w))
+                        .height(Length::Fixed(h))
+                        .content_fit(iced::ContentFit::Cover),
+                )
+                .style(|_| container::Style {
+                    border: Border {
+                        radius: 8.0.into(),
                         ..Default::default()
-                    })
-                    .into();
-                }
+                    },
+                    ..Default::default()
+                })
+                .into();
             }
         }
         self.view_search_card_backdrop(media_item, w, h)

@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::{Arc, RwLock as StdRwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 
-use gstreamer as gst;
-use gstreamer::prelude::*;
 use iced::Task;
+use rodio::Sink;
 use serde::Deserialize;
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -20,19 +21,16 @@ fn get_ytdlp_path() -> String {
             let ytdlp_name = "yt-dlp.exe";
             #[cfg(not(windows))]
             let ytdlp_name = "yt-dlp";
-
             let bundled_path = exe_dir.join(ytdlp_name);
             if bundled_path.exists() {
                 return bundled_path.to_string_lossy().to_string();
             }
         }
     }
-
     let compile_time_path = env!("YTDLP_PATH");
     if std::path::Path::new(compile_time_path).exists() {
         return compile_time_path.to_string();
     }
-
     #[cfg(windows)]
     return "yt-dlp.exe".to_string();
     #[cfg(not(windows))]
@@ -46,163 +44,97 @@ pub struct FrameData {
     pub data: Vec<u8>,
 }
 
-struct SharedFrame {
-    frame: Option<FrameData>,
+enum PlayerCommand {
+    Pause,
+    Resume,
+    ToggleMute,
+    Shutdown,
 }
 
 pub struct VideoPlayer {
-    pipeline: Option<gst::Pipeline>,
     current_media_id: Option<MediaId>,
-    shared_frame: Arc<StdRwLock<SharedFrame>>,
+    current_frame: Option<FrameData>,
+    frame_receiver: Option<crossbeam_channel::Receiver<FrameData>>,
+    command_sender: Option<crossbeam_channel::Sender<PlayerCommand>>,
+    decoder_thread: Option<thread::JoinHandle<()>>,
     is_playing: bool,
-    is_muted: bool,
-    is_ended: bool,
+    is_muted: Arc<AtomicBool>,
+    is_ended: Arc<AtomicBool>,
     current_url: Option<String>,
+    target_width: u32,
+    target_height: u32,
 }
 
 impl VideoPlayer {
     pub fn new() -> Result<Self, String> {
-        gst::init().map_err(|e| format!("Failed to init GStreamer: {}", e))?;
+        ffmpeg_next::init().map_err(|e| format!("FFmpeg init failed: {}", e))?;
         Ok(Self {
-            pipeline: None,
             current_media_id: None,
-            shared_frame: Arc::new(StdRwLock::new(SharedFrame { frame: None })),
+            current_frame: None,
+            frame_receiver: None,
+            command_sender: None,
+            decoder_thread: None,
             is_playing: false,
-            is_muted: false,
-            is_ended: false,
+            is_muted: Arc::new(AtomicBool::new(false)),
+            is_ended: Arc::new(AtomicBool::new(false)),
             current_url: None,
+            target_width: 640,
+            target_height: 360,
         })
     }
 
     pub fn play(&mut self, media_id: MediaId, url: &str) -> Result<(), String> {
         self.stop();
-        let pipeline = gst::Pipeline::new();
-        let playbin = gst::ElementFactory::make("playbin3")
-            .property("uri", url)
-            .property("buffer-size", 2 * 1024 * 1024i32)
-            .property("buffer-duration", 3_000_000_000i64)
-            .build()
-            .map_err(|e| format!("Failed to create playbin3: {}", e))?;
+        let (frame_tx, frame_rx) = crossbeam_channel::bounded(4);
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let url_clone = url.to_string();
+        let width = self.target_width;
+        let height = self.target_height;
+        let is_muted = self.is_muted.clone();
+        let is_ended = self.is_ended.clone();
+        is_ended.store(false, Ordering::SeqCst);
 
-        let video_sink = self.create_video_sink()?;
-        let audio_sink = gst::ElementFactory::make("autoaudiosink")
-            .build()
-            .map_err(|e| format!("Failed to create audio sink: {}", e))?;
+        let handle = thread::spawn(move || {
+            run_decoder(
+                url_clone, width, height, frame_tx, cmd_rx, is_muted, is_ended,
+            );
+        });
 
-        playbin.set_property("video-sink", &video_sink);
-        playbin.set_property("audio-sink", &audio_sink);
-        playbin.set_property("mute", self.is_muted);
-
-        pipeline
-            .add(&playbin)
-            .map_err(|e| format!("Failed to add playbin: {}", e))?;
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| format!("Failed to start: {:?}", e))?;
-
-        self.pipeline = Some(pipeline);
+        self.frame_receiver = Some(frame_rx);
+        self.command_sender = Some(cmd_tx);
+        self.decoder_thread = Some(handle);
         self.current_media_id = Some(media_id);
         self.current_url = Some(url.to_string());
         self.is_playing = true;
-        self.is_ended = false;
         Ok(())
     }
 
-    fn create_video_sink(&self) -> Result<gst::Element, String> {
-        let bin = gst::Bin::new();
-        let queue = gst::ElementFactory::make("queue")
-            .property("max-size-buffers", 4u32)
-            .property("max-size-time", 0u64)
-            .property("max-size-bytes", 0u32)
-            .build()
-            .map_err(|e| format!("queue: {}", e))?;
-
-        let videoconvert = gst::ElementFactory::make("videoconvert")
-            .build()
-            .map_err(|e| format!("Failed to create videoconvert: {}", e))?;
-
-        let capsfilter = gst::ElementFactory::make("capsfilter")
-            .property(
-                "caps",
-                gst::Caps::builder("video/x-raw")
-                    .field("format", "RGBA")
-                    .build(),
-            )
-            .build()
-            .map_err(|e| format!("Failed to create capsfilter: {}", e))?;
-
-        let appsink = gst::ElementFactory::make("appsink")
-            .property("emit-signals", true)
-            .property("sync", true)
-            .property("max-buffers", 2u32)
-            .property("drop", false)
-            .build()
-            .map_err(|e| format!("Failed to create appsink: {}", e))?;
-
-        bin.add_many([&queue, &videoconvert, &capsfilter, &appsink])
-            .map_err(|e| format!("Failed to add elements: {}", e))?;
-        gst::Element::link_many([&queue, &videoconvert, &capsfilter, &appsink])
-            .map_err(|e| format!("Failed to link elements: {}", e))?;
-
-        let pad = queue.static_pad("sink").ok_or("Failed to get sink pad")?;
-        let ghost_pad =
-            gst::GhostPad::with_target(&pad).map_err(|e| format!("Ghost pad error: {}", e))?;
-        bin.add_pad(&ghost_pad)
-            .map_err(|e| format!("Failed to add ghost pad: {}", e))?;
-
-        let appsink = appsink
-            .downcast::<gstreamer_app::AppSink>()
-            .map_err(|_| "Failed to downcast to AppSink")?;
-        let shared = self.shared_frame.clone();
-
-        appsink.set_callbacks(
-            gstreamer_app::AppSinkCallbacks::builder()
-                .new_sample(move |sink| {
-                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Error)?;
-                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
-                    let caps = sample.caps().ok_or(gst::FlowError::Error)?;
-                    let info = gstreamer_video::VideoInfo::from_caps(caps)
-                        .map_err(|_| gst::FlowError::Error)?;
-                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
-                    if let Ok(mut guard) = shared.write() {
-                        guard.frame = Some(FrameData {
-                            width: info.width(),
-                            height: info.height(),
-                            data: map.as_slice().to_vec(),
-                        });
-                    }
-                    Ok(gst::FlowSuccess::Ok)
-                })
-                .build(),
-        );
-        Ok(bin.upcast())
-    }
-
     pub fn stop(&mut self) {
-        if let Some(pipeline) = self.pipeline.take() {
-            let _ = pipeline.set_state(gst::State::Null);
+        if let Some(sender) = self.command_sender.take() {
+            let _ = sender.send(PlayerCommand::Shutdown);
         }
+        if let Some(handle) = self.decoder_thread.take() {
+            let _ = handle.join();
+        }
+        self.frame_receiver = None;
         self.current_media_id = None;
         self.current_url = None;
         self.is_playing = false;
-        self.is_ended = false;
-        if let Ok(mut guard) = self.shared_frame.write() {
-            guard.frame = None;
-        }
+        self.current_frame = None;
     }
 
     pub fn pause(&mut self) {
-        if let Some(ref pipeline) = self.pipeline {
-            let _ = pipeline.set_state(gst::State::Paused);
-            self.is_playing = false;
+        if let Some(ref sender) = self.command_sender {
+            let _ = sender.send(PlayerCommand::Pause);
         }
+        self.is_playing = false;
     }
 
     pub fn resume(&mut self) {
-        if let Some(ref pipeline) = self.pipeline {
-            let _ = pipeline.set_state(gst::State::Playing);
-            self.is_playing = true;
+        if let Some(ref sender) = self.command_sender {
+            let _ = sender.send(PlayerCommand::Resume);
         }
+        self.is_playing = true;
     }
 
     pub fn is_playing(&self) -> bool {
@@ -210,7 +142,7 @@ impl VideoPlayer {
     }
 
     pub fn has_pipeline(&self) -> bool {
-        self.pipeline.is_some()
+        self.decoder_thread.is_some()
     }
 
     pub fn current_media_id(&self) -> Option<MediaId> {
@@ -218,31 +150,21 @@ impl VideoPlayer {
     }
 
     pub fn toggle_mute(&mut self) {
-        self.is_muted = !self.is_muted;
-        if let Some(ref pipeline) = self.pipeline {
-            for element in pipeline.iterate_elements().into_iter().flatten() {
-                if element.name().as_str().contains("playbin") {
-                    element.set_property("mute", self.is_muted);
-                    break;
-                }
-            }
+        let current = self.is_muted.load(Ordering::SeqCst);
+        self.is_muted.store(!current, Ordering::SeqCst);
+        if let Some(ref sender) = self.command_sender {
+            let _ = sender.send(PlayerCommand::ToggleMute);
         }
     }
 
     pub fn is_muted(&self) -> bool {
-        self.is_muted
+        self.is_muted.load(Ordering::SeqCst)
     }
 
     pub fn check_ended(&mut self) -> bool {
-        if let Some(ref pipeline) = self.pipeline {
-            let bus = pipeline.bus().unwrap();
-            while let Some(msg) = bus.pop() {
-                if let gst::MessageView::Eos(_) = msg.view() {
-                    self.is_ended = true;
-                    self.is_playing = false;
-                    return true;
-                }
-            }
+        if self.is_ended.load(Ordering::SeqCst) {
+            self.is_playing = false;
+            return true;
         }
         false
     }
@@ -254,7 +176,16 @@ impl VideoPlayer {
     }
 
     pub fn get_frame(&self) -> Option<FrameData> {
-        self.shared_frame.read().ok().and_then(|g| g.frame.clone())
+        self.current_frame.clone()
+    }
+
+    pub fn render_frame(&mut self) -> Option<FrameData> {
+        let receiver = self.frame_receiver.as_ref()?;
+        if let Ok(frame) = receiver.try_recv() {
+            self.current_frame = Some(frame.clone());
+            return Some(frame);
+        }
+        self.current_frame.clone()
     }
 }
 
@@ -262,6 +193,183 @@ impl Drop for VideoPlayer {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+fn run_decoder(
+    url: String,
+    target_width: u32,
+    target_height: u32,
+    frame_sender: crossbeam_channel::Sender<FrameData>,
+    command_receiver: crossbeam_channel::Receiver<PlayerCommand>,
+    is_muted: Arc<AtomicBool>,
+    is_ended: Arc<AtomicBool>,
+) {
+    let (_stream, sink) = match create_audio_output() {
+        Some(s) => s,
+        None => {
+            is_ended.store(true, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let mut ictx = match ffmpeg_next::format::input(&url) {
+        Ok(ctx) => ctx,
+        Err(_) => {
+            is_ended.store(true, Ordering::SeqCst);
+            return;
+        }
+    };
+
+    let video_stream = ictx.streams().best(ffmpeg_next::media::Type::Video);
+    let audio_stream = ictx.streams().best(ffmpeg_next::media::Type::Audio);
+    let video_index = video_stream.as_ref().map(|s| s.index());
+    let audio_index = audio_stream.as_ref().map(|s| s.index());
+    let video_time_base = video_stream.as_ref().map(|s| s.time_base());
+
+    let mut video_decoder = video_stream.and_then(|s| {
+        ffmpeg_next::codec::context::Context::from_parameters(s.parameters())
+            .ok()?
+            .decoder()
+            .video()
+            .ok()
+    });
+
+    let mut audio_decoder = audio_stream.and_then(|s| {
+        ffmpeg_next::codec::context::Context::from_parameters(s.parameters())
+            .ok()?
+            .decoder()
+            .audio()
+            .ok()
+    });
+
+    let mut scaler = video_decoder.as_ref().and_then(|dec| {
+        ffmpeg_next::software::scaling::Context::get(
+            dec.format(),
+            dec.width(),
+            dec.height(),
+            ffmpeg_next::format::Pixel::RGBA,
+            target_width,
+            target_height,
+            ffmpeg_next::software::scaling::Flags::BILINEAR,
+        )
+        .ok()
+    });
+
+    let mut resampler = audio_decoder.as_ref().and_then(|dec| {
+        ffmpeg_next::software::resampling::Context::get(
+            dec.format(),
+            dec.channel_layout(),
+            dec.rate(),
+            ffmpeg_next::format::Sample::I16(ffmpeg_next::format::sample::Type::Packed),
+            ffmpeg_next::ChannelLayout::STEREO,
+            44100,
+        )
+        .ok()
+    });
+
+    let playback_start = std::time::Instant::now();
+    let mut pause_offset = std::time::Duration::ZERO;
+    let mut pause_start: Option<std::time::Instant> = None;
+    let mut is_paused = false;
+
+    for (pkt_stream, packet) in ictx.packets() {
+        while let Ok(cmd) = command_receiver.try_recv() {
+            match cmd {
+                PlayerCommand::Shutdown => return,
+                PlayerCommand::Pause => {
+                    is_paused = true;
+                    pause_start = Some(std::time::Instant::now());
+                    sink.pause();
+                }
+                PlayerCommand::Resume => {
+                    is_paused = false;
+                    if let Some(ps) = pause_start.take() {
+                        pause_offset += ps.elapsed();
+                    }
+                    sink.play();
+                }
+                PlayerCommand::ToggleMute => {
+                    sink.set_volume(if is_muted.load(Ordering::SeqCst) {
+                        0.0
+                    } else {
+                        1.0
+                    });
+                }
+            }
+        }
+
+        if is_paused {
+            thread::sleep(std::time::Duration::from_millis(50));
+            continue;
+        }
+
+        let stream_index = pkt_stream.index();
+
+        if Some(stream_index) == audio_index {
+            if let (Some(ref mut decoder), Some(ref mut resamp)) =
+                (&mut audio_decoder, &mut resampler)
+            {
+                if decoder.send_packet(&packet).is_ok() {
+                    let mut decoded = ffmpeg_next::frame::Audio::empty();
+                    while decoder.receive_frame(&mut decoded).is_ok() {
+                        let mut resampled = ffmpeg_next::frame::Audio::empty();
+                        if resamp.run(&decoded, &mut resampled).is_ok() {
+                            let data = resampled.data(0);
+                            let samples: Vec<f32> = data
+                                .chunks_exact(2)
+                                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                                .collect();
+                            let source = rodio::buffer::SamplesBuffer::new(2, 44100, samples);
+                            sink.append(source);
+                        }
+                    }
+                }
+            }
+        }
+
+        if Some(stream_index) == video_index {
+            if let Some(ref mut decoder) = video_decoder {
+                if decoder.send_packet(&packet).is_ok() {
+                    let mut decoded = ffmpeg_next::frame::Video::empty();
+                    while decoder.receive_frame(&mut decoded).is_ok() {
+                        if let Some(ref mut sc) = scaler {
+                            let mut rgb_frame = ffmpeg_next::frame::Video::empty();
+                            if sc.run(&decoded, &mut rgb_frame).is_ok() {
+                                if let Some(tb) = video_time_base {
+                                    let pts = decoded.pts().unwrap_or(0);
+                                    let frame_time = std::time::Duration::from_secs_f64(
+                                        pts as f64 * f64::from(tb),
+                                    );
+                                    let elapsed = playback_start.elapsed() - pause_offset;
+                                    if frame_time > elapsed {
+                                        thread::sleep(frame_time - elapsed);
+                                    }
+                                }
+                                let frame = FrameData {
+                                    width: target_width,
+                                    height: target_height,
+                                    data: rgb_frame.data(0).to_vec(),
+                                };
+                                if frame_sender.send(frame).is_err() {
+                                    is_ended.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    sink.sleep_until_end();
+    is_ended.store(true, Ordering::SeqCst);
+}
+
+fn create_audio_output() -> Option<(std::mem::ManuallyDrop<rodio::OutputStream>, Sink)> {
+    let stream = rodio::OutputStreamBuilder::open_default_stream().ok()?;
+    let sink = Sink::connect_new(stream.mixer());
+    Some((std::mem::ManuallyDrop::new(stream), sink))
 }
 
 #[derive(Clone)]
@@ -478,7 +586,6 @@ impl Movix {
         let Some(client) = &self.tmdb_client else {
             return Task::none();
         };
-
         let fetch_client = client.clone();
         let mt = media_type.clone();
         Task::perform(
@@ -498,17 +605,8 @@ impl Movix {
     pub fn load_trailer_for_hovered_card(&self, media_id: MediaId) -> Task<Message> {
         let pause_hero = Task::done(Message::PauseHeroTrailer);
 
-        if let Some(url) = self.stream_url_cache.get(&media_id) {
-            let player = self.card_player.clone();
-            let url = url.clone();
-            let play_task = Task::perform(
-                async move {
-                    let mut p = player.lock().await;
-                    let _ = p.play(media_id, &url);
-                },
-                |_| Message::CardFrameTick,
-            );
-            return Task::batch([pause_hero, play_task]);
+        if self.stream_url_cache.contains_key(&media_id) {
+            return Task::batch([pause_hero, Task::done(Message::PlayCardTrailer(media_id))]);
         }
 
         if let Some(cached) = self.trailer_cache.get(&media_id) {
@@ -528,7 +626,6 @@ impl Movix {
         let Some(item) = item else {
             return Task::none();
         };
-
         let load_task = self.load_trailer_for_media(media_id, &item.media_type);
         Task::batch([pause_hero, load_task])
     }
@@ -537,7 +634,6 @@ impl Movix {
         let Some(client) = &self.tmdb_client else {
             return Task::none();
         };
-
         let mut tasks = Vec::new();
         for section in sections.iter().take(2) {
             for item in section.items.iter().take(5) {

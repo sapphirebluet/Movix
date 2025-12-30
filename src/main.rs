@@ -50,8 +50,8 @@ pub struct Movix {
     pub section_scroll_targets: Vec<f32>,
     pub tmdb_client: Option<TmdbClient>,
     pub trailer_manager: TrailerManager,
-    pub hero_player: Arc<Mutex<VideoPlayer>>,
-    pub card_player: Arc<Mutex<VideoPlayer>>,
+    pub hero_player: VideoPlayer,
+    pub card_player: VideoPlayer,
     pub trailer_cache: std::collections::HashMap<MediaId, Option<String>>,
     pub stream_url_cache: std::collections::HashMap<MediaId, String>,
     pub hero_visible: bool,
@@ -60,7 +60,7 @@ pub struct Movix {
     pub card_video_frame: Option<iced::widget::image::Handle>,
     pub hero_muted: bool,
     pub hero_ended: bool,
-    pub movie_player: Arc<Mutex<MoviePlayer>>,
+    pub movie_player: MoviePlayer,
     pub movie_player_active: bool,
     pub movie_player_media_id: Option<MediaId>,
     pub movie_player_title: Option<String>,
@@ -82,7 +82,7 @@ pub struct Movix {
     pub detail_episodes: Vec<Episode>,
     pub detail_hovered_card: Option<MediaId>,
     pub pending_detail_hover_card: Option<MediaId>,
-    pub detail_player: Arc<Mutex<VideoPlayer>>,
+    pub detail_player: VideoPlayer,
     pub detail_video_frame: Option<iced::widget::image::Handle>,
     pub search_active: bool,
     pub search_filters: SearchFilters,
@@ -113,12 +113,8 @@ impl Default for Movix {
             section_scroll_targets: Vec::new(),
             tmdb_client: None,
             trailer_manager: TrailerManager::new(),
-            hero_player: Arc::new(Mutex::new(
-                VideoPlayer::new().expect("Failed to init hero player"),
-            )),
-            card_player: Arc::new(Mutex::new(
-                VideoPlayer::new().expect("Failed to init card player"),
-            )),
+            hero_player: VideoPlayer::new().expect("Failed to init hero player"),
+            card_player: VideoPlayer::new().expect("Failed to init card player"),
             trailer_cache: std::collections::HashMap::new(),
             stream_url_cache: std::collections::HashMap::new(),
             hero_visible: true,
@@ -127,9 +123,8 @@ impl Default for Movix {
             card_video_frame: None,
             hero_muted: false,
             hero_ended: false,
-            movie_player: Arc::new(Mutex::new(
-                MoviePlayer::new(progress_store.clone()).expect("Failed to init movie player"),
-            )),
+            movie_player: MoviePlayer::new(progress_store.clone())
+                .expect("Failed to init movie player"),
             movie_player_active: false,
             movie_player_media_id: None,
             movie_player_title: None,
@@ -151,9 +146,7 @@ impl Default for Movix {
             detail_episodes: Vec::new(),
             detail_hovered_card: None,
             pending_detail_hover_card: None,
-            detail_player: Arc::new(Mutex::new(
-                VideoPlayer::new().expect("Failed to init detail player"),
-            )),
+            detail_player: VideoPlayer::new().expect("Failed to init detail player"),
             detail_video_frame: None,
             search_active: false,
             search_filters: SearchFilters::default(),
@@ -185,7 +178,9 @@ impl Movix {
         let genres_client = client.clone();
         let load_content =
             Task::perform(load_initial_content(content_client), Message::ContentLoaded);
-        let load_hero = Task::perform(load_hero_content(hero_client), Message::HeroLoaded);
+        let load_hero = Task::perform(load_hero_content(hero_client), |r| {
+            Message::HeroLoaded(Box::new(r))
+        });
         let load_genres = Task::perform(load_genres(genres_client), Message::GenresLoaded);
 
         (
@@ -209,7 +204,9 @@ impl Movix {
 
         Task::batch([
             Task::perform(load_initial_content(content_client), Message::ContentLoaded),
-            Task::perform(load_hero_content(hero_client), Message::HeroLoaded),
+            Task::perform(load_hero_content(hero_client), |r| {
+                Message::HeroLoaded(Box::new(r))
+            }),
             Task::perform(load_genres(genres_client), Message::GenresLoaded),
         ])
     }
@@ -266,27 +263,10 @@ impl Movix {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let hero_playing = self
-            .hero_player
-            .try_lock()
-            .map(|p: tokio::sync::MutexGuard<'_, VideoPlayer>| p.is_playing())
-            .unwrap_or(false);
-        let card_playing = self
-            .card_player
-            .try_lock()
-            .map(|p: tokio::sync::MutexGuard<'_, VideoPlayer>| p.is_playing())
-            .unwrap_or(false);
-        let detail_playing = self
-            .detail_player
-            .try_lock()
-            .map(|p: tokio::sync::MutexGuard<'_, VideoPlayer>| p.is_playing())
-            .unwrap_or(false);
-        let movie_playing = self.movie_player_active
-            && self
-                .movie_player
-                .try_lock()
-                .map(|p| p.has_pipeline())
-                .unwrap_or(false);
+        let hero_playing = self.hero_player.is_playing();
+        let card_playing = self.card_player.is_playing();
+        let detail_playing = self.detail_player.is_playing();
+        let movie_playing = self.movie_player_active && self.movie_player.has_pipeline();
 
         let mut subs = Vec::new();
         if hero_playing && !self.movie_player_active && !self.detail_popup_open {
@@ -330,20 +310,7 @@ impl Movix {
     }
 }
 
-fn setup_gstreamer_paths() {
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(exe_dir) = exe_path.parent() {
-            let plugin_path = exe_dir.join("lib").join("gstreamer-1.0");
-            if plugin_path.exists() {
-                std::env::set_var("GST_PLUGIN_PATH", &plugin_path);
-            }
-        }
-    }
-}
-
 fn main() -> iced::Result {
-    setup_gstreamer_paths();
-
     iced::application(Movix::new, Movix::update, Movix::view)
         .title("Movix")
         .theme(Movix::theme)

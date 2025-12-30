@@ -11,7 +11,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/Iced-0.14-blue?style=for-the-badge" alt="Iced">
-  <img src="https://img.shields.io/badge/GStreamer-Multimedia-green?style=for-the-badge&logo=gstreamer" alt="GStreamer">
+  <img src="https://img.shields.io/badge/FFmpeg-Multimedia-green?style=for-the-badge&logo=ffmpeg" alt="FFmpeg">
   <img src="https://img.shields.io/badge/TMDB-API-01d277?style=for-the-badge&logo=themoviedatabase" alt="TMDB">
   <img src="https://img.shields.io/badge/License-GPL%20v3-blue?style=for-the-badge" alt="License">
 </p>
@@ -45,7 +45,7 @@
 
 - Netflix-style UI with hero sections, content carousels, and expandable cards
 - TMDB integration for movie/series metadata, posters, backdrops, and logos
-- Video playback via GStreamer with trailer previews on hover
+- Video playback via FFmpeg with trailer previews on hover
 - Detail popups with cast, collections, seasons/episodes, and recommendations
 - Search with filters (media type, genre, year range, rating, sort options)
 - Playback progress persistence across sessions
@@ -106,12 +106,13 @@ Settings are persisted to `~/.config/movix/config.json` and loaded on subsequent
 
 ### Video Playback (`video.rs`, `movie_player.rs`)
 
-GStreamer-based video pipeline:
+FFmpeg-based video pipeline using `ffmpeg-next`:
 
 - `VideoPlayer`: Lightweight player for trailer previews with frame extraction
 - `MoviePlayer`: Full-featured player with seek, volume, mute, and progress tracking
 - `TrailerManager`: YouTube URL resolution via yt-dlp with caching
-- Frame data extraction via `appsink` for Iced image rendering
+- Audio playback via `rodio` with FFmpeg resampling
+- Frame data extraction for Iced image rendering
 
 ### Streaming Service (`streaming/`)
 
@@ -193,18 +194,18 @@ pub enum Message {
 
 ## Dependencies
 
-| Crate           | Purpose                                |
-| --------------- | -------------------------------------- |
-| `iced`          | GUI framework with async runtime       |
-| `gstreamer`     | Video decoding and playback            |
-| `gstreamer-app` | Frame extraction via appsink           |
-| `reqwest`       | HTTP client for API and image fetching |
-| `serde`         | JSON serialization                     |
-| `tokio`         | Async runtime                          |
-| `image`         | Color palette extraction               |
-| `base64`        | Stream URL deobfuscation               |
-| `regex`         | HTML parsing for stream resolution     |
-| `async-trait`   | Async trait support                    |
+| Crate              | Purpose                                |
+| ------------------ | -------------------------------------- |
+| `iced`             | GUI framework with async runtime       |
+| `ffmpeg-next`      | Video/audio decoding                   |
+| `rodio`            | Audio playback                         |
+| `crossbeam-channel`| Thread communication for decoder       |
+| `reqwest`          | HTTP client for API and image fetching |
+| `serde`            | JSON serialization                     |
+| `tokio`            | Async runtime                          |
+| `base64`           | Stream URL deobfuscation               |
+| `regex`            | HTML parsing for stream resolution     |
+| `async-trait`      | Async trait support                    |
 
 ---
 
@@ -213,14 +214,20 @@ pub enum Message {
 ### Prerequisites
 
 - Rust 1.70+
-- GStreamer development libraries
+- FFmpeg development libraries
 - yt-dlp (auto-downloaded during build)
 
 ### Linux (Debian/Ubuntu)
 
 ```bash
-sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-    gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+sudo apt install libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+    libavdevice-dev libswscale-dev libswresample-dev libasound2-dev pkg-config
+```
+
+### Linux (Arch)
+
+```bash
+sudo pacman -S ffmpeg alsa-lib
 ```
 
 ### Compile

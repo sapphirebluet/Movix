@@ -218,14 +218,12 @@ impl Movix {
 
     pub fn view_hero_backdrop(&self, media_item: &MediaItem) -> Element<'_, Message> {
         if let Some(ref frame_handle) = self.hero_video_frame {
-            if let Ok(player) = self.hero_player.try_lock() {
-                if player.current_media_id() == Some(media_item.id) {
-                    return iced::widget::image(frame_handle.clone())
-                        .width(Length::Fill)
-                        .height(Length::Fixed(HERO_HEIGHT))
-                        .content_fit(iced::ContentFit::Cover)
-                        .into();
-                }
+            if self.hero_player.current_media_id() == Some(media_item.id) {
+                return iced::widget::image(frame_handle.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fixed(HERO_HEIGHT))
+                    .content_fit(iced::ContentFit::Cover)
+                    .into();
             }
         }
 

@@ -363,23 +363,21 @@ impl Movix {
         let media_id = media_item.id;
 
         if let Some(ref frame_handle) = self.card_video_frame {
-            if let Ok(player) = self.card_player.try_lock() {
-                if player.current_media_id() == Some(media_id) {
-                    return container(
-                        iced::widget::image(frame_handle.clone())
-                            .width(Length::Fixed(EXPANDED_WIDTH))
-                            .height(Length::Fixed(EXPANDED_HEIGHT))
-                            .content_fit(iced::ContentFit::Cover),
-                    )
-                    .style(|_theme| container::Style {
-                        border: Border {
-                            radius: 8.0.into(),
-                            ..Default::default()
-                        },
+            if self.card_player.current_media_id() == Some(media_id) {
+                return container(
+                    iced::widget::image(frame_handle.clone())
+                        .width(Length::Fixed(EXPANDED_WIDTH))
+                        .height(Length::Fixed(EXPANDED_HEIGHT))
+                        .content_fit(iced::ContentFit::Cover),
+                )
+                .style(|_theme| container::Style {
+                    border: Border {
+                        radius: 8.0.into(),
                         ..Default::default()
-                    })
-                    .into();
-                }
+                    },
+                    ..Default::default()
+                })
+                .into();
             }
         }
 

@@ -48,12 +48,11 @@ jobs:
         with:
           arch: x64
 
-      - name: Install GStreamer
+      - name: Install FFmpeg
         run: |
-          Invoke-WebRequest -Uri "https://media.githubusercontent.com/media/sapphirebluet/gstreamer-bin/refs/heads/main/gstreamer-1.0-msvc-x86_64-1.26.10.msi?download=true" -OutFile gstreamer.msi
-          Invoke-WebRequest -Uri "https://media.githubusercontent.com/media/sapphirebluet/gstreamer-bin/refs/heads/main/gstreamer-1.0-devel-msvc-x86_64-1.26.10.msi?download=true" -OutFile gstreamer-devel.msi
-          Start-Process msiexec.exe -ArgumentList '/i', 'gstreamer.msi', '/quiet', '/norestart', 'INSTALLDIR=C:\gstreamer' -Wait
-          Start-Process msiexec.exe -ArgumentList '/i', 'gstreamer-devel.msi', '/quiet', '/norestart', 'INSTALLDIR=C:\gstreamer' -Wait
+          choco install ffmpeg-full -y
+          $env:FFMPEG_DIR = "C:\ProgramData\chocolatey\lib\ffmpeg-full\tools\ffmpeg"
+          echo "FFMPEG_DIR=$env:FFMPEG_DIR" >> $env:GITHUB_ENV
 
       - name: Provision NSIS
         run: choco install nsis -y
@@ -67,46 +66,22 @@ jobs:
       - name: Compile release binary
         env:
           RUSTFLAGS: -Clink-arg=assets/icon.res
-          PATH: C:\gstreamer\1.0\msvc_x86_64\bin;${{ env.PATH }}
-          PKG_CONFIG_PATH: C:\gstreamer\1.0\msvc_x86_64\lib\pkgconfig
         run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Prepare portable distribution
         run: |
-          $gstBin = "C:\gstreamer\1.0\msvc_x86_64\bin"
+          $ffmpegBin = "C:\ProgramData\chocolatey\lib\ffmpeg-full\tools\ffmpeg\bin"
           New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}"
           
-          # Copy main executable
           Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "portable\${{ env.APP_NAME }}\"
           
-          # Copy yt-dlp binary from build output
           $ytdlpPath = Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release/build" -Recurse -Filter "yt-dlp.exe" | Select-Object -First 1
           if ($ytdlpPath) {
             Copy-Item $ytdlpPath.FullName "portable\${{ env.APP_NAME }}\"
           }
           
-          # Copy all GStreamer DLLs from bin
-          Copy-Item "$gstBin\*.dll" "portable\${{ env.APP_NAME }}\"
+          Copy-Item "$ffmpegBin\*.dll" "portable\${{ env.APP_NAME }}\" -ErrorAction SilentlyContinue
           
-          # Copy all GStreamer plugins
-          $gstPlugins = "C:\gstreamer\1.0\msvc_x86_64\lib\gstreamer-1.0"
-          New-Item -ItemType Directory -Force -Path "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0"
-          Copy-Item "$gstPlugins\*.dll" "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\"
-          
-          # Remove plugins with external dependencies that cause warnings
-          $excludePlugins = @(
-            "gstamrnb.dll",
-            "gstamrwbdec.dll",
-            "gstpython.dll"
-          )
-          foreach ($plugin in $excludePlugins) {
-            $path = "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\$plugin"
-            if (Test-Path $path) {
-              Remove-Item $path -Force
-            }
-          }
-          
-          # Create zip
           New-Item -ItemType Directory -Force -Path output
           Compress-Archive -Path "portable\${{ env.APP_NAME }}" -DestinationPath "output\${{ env.APP_NAME }}-windows-x64-portable.zip"
 
@@ -139,15 +114,8 @@ jobs:
             File "target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe"
             File "assets\icon.ico"
             
-            ; yt-dlp binary
             File /nonfatal "portable\${{ env.APP_NAME }}\yt-dlp.exe"
-            
-            ; GStreamer DLLs
-            File "portable\${{ env.APP_NAME }}\*.dll"
-            
-            ; GStreamer plugins
-            SetOutPath "`$INSTDIR\lib\gstreamer-1.0"
-            File /nonfatal "portable\${{ env.APP_NAME }}\lib\gstreamer-1.0\*.dll"
+            File /nonfatal "portable\${{ env.APP_NAME }}\*.dll"
             
             SetOutPath "`$INSTDIR"
 
@@ -170,7 +138,6 @@ jobs:
             Delete "`$INSTDIR\yt-dlp.exe"
             Delete "`$INSTDIR\icon.ico"
             Delete "`$INSTDIR\*.dll"
-            RMDir /r "`$INSTDIR\lib"
             Delete "`$INSTDIR\uninstall.exe"
             RMDir "`$INSTDIR"
 
@@ -202,8 +169,9 @@ jobs:
       - name: Provision system libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly rpm
+          sudo apt-get install -y libavcodec-dev libavformat-dev libavutil-dev \
+            libswscale-dev libavfilter-dev libavdevice-dev \
+            libclang-dev pkg-config rpm
 
       - name: Compile release binary
         run: cargo build --release
@@ -215,7 +183,6 @@ jobs:
 
           cp target/release/${{ env.APP_NAME }} bundle/usr/bin/
           
-          # Copy yt-dlp binary from build output
           YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
           if [ -n "$YTDLP_PATH" ]; then
             cp "$YTDLP_PATH" bundle/usr/bin/
@@ -256,7 +223,6 @@ jobs:
 
           cp target/release/${{ env.APP_NAME }} pkg-deb/usr/bin/
           
-          # Copy yt-dlp binary from build output
           YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
           if [ -n "$YTDLP_PATH" ]; then
             cp "$YTDLP_PATH" pkg-deb/usr/bin/
@@ -270,13 +236,13 @@ jobs:
           Section: video
           Priority: optional
           Architecture: amd64
-          Depends: gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly
+          Depends: ffmpeg
           Maintainer: Movix Contributors
           Homepage: https://github.com/sapphirebluet/Movix
           Description: Native desktop streaming client
            A Rust-based streaming application featuring a Netflix-inspired
            interface for browsing and playing movies and TV series.
-           Integrates with TMDB for metadata and uses GStreamer for playback.
+           Integrates with TMDB for metadata and uses FFmpeg for playback.
           CTRL
 
           cat > pkg-deb/usr/share/applications/${{ env.APP_NAME }}.desktop << DESKTOP
@@ -298,7 +264,6 @@ jobs:
 
           cp target/release/${{ env.APP_NAME }} rpm-workspace/SOURCES/
           
-          # Copy yt-dlp binary from build output
           YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
           if [ -n "$YTDLP_PATH" ]; then
             cp "$YTDLP_PATH" rpm-workspace/SOURCES/
@@ -321,8 +286,10 @@ jobs:
           Version: ${APP_VER}
           Release: 1
           Summary: Native desktop streaming client
-          License: MIT
+          License: GPL-3.0
           URL: https://github.com/sapphirebluet/Movix
+
+          Requires: ffmpeg
 
           %description
           A Rust-based streaming application featuring a Netflix-inspired
@@ -354,7 +321,6 @@ jobs:
 
           cp target/release/${{ env.APP_NAME }} pkg-arch/usr/bin/
           
-          # Copy yt-dlp binary from build output
           YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
           if [ -n "$YTDLP_PATH" ]; then
             cp "$YTDLP_PATH" pkg-arch/usr/bin/
@@ -381,11 +347,8 @@ jobs:
           packager = GitHub Actions
           size = $(stat -c%s target/release/${{ env.APP_NAME }})
           arch = x86_64
-          license = MIT
-          depend = gstreamer
-          depend = gst-plugins-good
-          depend = gst-plugins-bad
-          depend = gst-plugins-ugly
+          license = GPL-3.0
+          depend = ffmpeg
           PKGINFO
 
           cd pkg-arch && tar -cJf ../${{ env.APP_NAME }}-x86_64.pkg.tar.zst .PKGINFO usr

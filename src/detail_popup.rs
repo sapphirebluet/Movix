@@ -86,7 +86,7 @@ pub fn hidden_scrollbar_style(
     };
     scrollable::Style {
         container: container::Style::default(),
-        vertical_rail: transparent_rail.clone(),
+        vertical_rail: transparent_rail,
         horizontal_rail: transparent_rail,
         gap: None,
         auto_scroll: scrollable::AutoScroll {
@@ -446,15 +446,13 @@ impl Movix {
         let media_id = media_item.id;
 
         if let Some(ref frame_handle) = self.detail_video_frame {
-            if let Ok(player) = self.detail_player.try_lock() {
-                if player.current_media_id() == Some(media_id) {
-                    return iced::widget::image(frame_handle.clone())
-                        .width(Length::Fill)
-                        .height(Length::Fixed(MINI_HERO_HEIGHT))
-                        .content_fit(iced::ContentFit::Cover)
-                        .border_radius(16.0)
-                        .into();
-                }
+            if self.detail_player.current_media_id() == Some(media_id) {
+                return iced::widget::image(frame_handle.clone())
+                    .width(Length::Fill)
+                    .height(Length::Fixed(MINI_HERO_HEIGHT))
+                    .content_fit(iced::ContentFit::Cover)
+                    .border_radius(16.0)
+                    .into();
             }
         }
 
