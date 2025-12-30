@@ -79,6 +79,12 @@ jobs:
           # Copy main executable
           Copy-Item "target/x86_64-pc-windows-msvc/release/${{ env.APP_NAME }}.exe" "portable\${{ env.APP_NAME }}\"
           
+          # Copy yt-dlp binary from build output
+          $ytdlpPath = Get-ChildItem -Path "target/x86_64-pc-windows-msvc/release/build" -Recurse -Filter "yt-dlp.exe" | Select-Object -First 1
+          if ($ytdlpPath) {
+            Copy-Item $ytdlpPath.FullName "portable\${{ env.APP_NAME }}\"
+          }
+          
           # Copy all GStreamer DLLs from bin
           Copy-Item "$gstBin\*.dll" "portable\${{ env.APP_NAME }}\"
           
@@ -133,6 +139,9 @@ jobs:
             File "target\x86_64-pc-windows-msvc\release\${{ env.APP_NAME }}.exe"
             File "assets\icon.ico"
             
+            ; yt-dlp binary
+            File /nonfatal "portable\${{ env.APP_NAME }}\yt-dlp.exe"
+            
             ; GStreamer DLLs
             File "portable\${{ env.APP_NAME }}\*.dll"
             
@@ -158,6 +167,7 @@ jobs:
 
           Section "Uninstall"
             Delete "`$INSTDIR\${{ env.APP_NAME }}.exe"
+            Delete "`$INSTDIR\yt-dlp.exe"
             Delete "`$INSTDIR\icon.ico"
             Delete "`$INSTDIR\*.dll"
             RMDir /r "`$INSTDIR\lib"
@@ -204,6 +214,13 @@ jobs:
           mkdir -p bundle/usr/bin bundle/usr/share/applications bundle/usr/share/icons/hicolor/256x256/apps
 
           cp target/release/${{ env.APP_NAME }} bundle/usr/bin/
+          
+          # Copy yt-dlp binary from build output
+          YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
+          if [ -n "$YTDLP_PATH" ]; then
+            cp "$YTDLP_PATH" bundle/usr/bin/
+          fi
+          
           cp assets/icon.png bundle/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
 
           cat > bundle/usr/share/applications/${{ env.APP_NAME }}.desktop << DESKTOP
@@ -238,6 +255,13 @@ jobs:
           mkdir -p pkg-deb/DEBIAN pkg-deb/usr/bin pkg-deb/usr/share/applications pkg-deb/usr/share/icons/hicolor/256x256/apps
 
           cp target/release/${{ env.APP_NAME }} pkg-deb/usr/bin/
+          
+          # Copy yt-dlp binary from build output
+          YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
+          if [ -n "$YTDLP_PATH" ]; then
+            cp "$YTDLP_PATH" pkg-deb/usr/bin/
+          fi
+          
           cp assets/icon.png pkg-deb/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
 
           cat > pkg-deb/DEBIAN/control << CTRL
@@ -273,6 +297,13 @@ jobs:
           mkdir -p rpm-workspace/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
 
           cp target/release/${{ env.APP_NAME }} rpm-workspace/SOURCES/
+          
+          # Copy yt-dlp binary from build output
+          YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
+          if [ -n "$YTDLP_PATH" ]; then
+            cp "$YTDLP_PATH" rpm-workspace/SOURCES/
+          fi
+          
           cp assets/icon.png rpm-workspace/SOURCES/${{ env.APP_NAME }}.png
 
           cat > rpm-workspace/SOURCES/${{ env.APP_NAME }}.desktop << DESKTOP
@@ -302,11 +333,13 @@ jobs:
           mkdir -p %{buildroot}/usr/share/applications
           mkdir -p %{buildroot}/usr/share/icons/hicolor/256x256/apps
           install -m 755 %{_topdir}/SOURCES/${{ env.APP_NAME }} %{buildroot}/usr/bin/
+          install -m 755 %{_topdir}/SOURCES/yt-dlp %{buildroot}/usr/bin/ || true
           install -m 644 %{_topdir}/SOURCES/${{ env.APP_NAME }}.desktop %{buildroot}/usr/share/applications/
           install -m 644 %{_topdir}/SOURCES/${{ env.APP_NAME }}.png %{buildroot}/usr/share/icons/hicolor/256x256/apps/
 
           %files
           /usr/bin/${{ env.APP_NAME }}
+          /usr/bin/yt-dlp
           /usr/share/applications/${{ env.APP_NAME }}.desktop
           /usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
           SPEC
@@ -320,6 +353,13 @@ jobs:
           mkdir -p pkg-arch/usr/bin pkg-arch/usr/share/applications pkg-arch/usr/share/icons/hicolor/256x256/apps
 
           cp target/release/${{ env.APP_NAME }} pkg-arch/usr/bin/
+          
+          # Copy yt-dlp binary from build output
+          YTDLP_PATH=$(find target/release/build -name "yt-dlp" -type f | head -1)
+          if [ -n "$YTDLP_PATH" ]; then
+            cp "$YTDLP_PATH" pkg-arch/usr/bin/
+          fi
+          
           cp assets/icon.png pkg-arch/usr/share/icons/hicolor/256x256/apps/${{ env.APP_NAME }}.png
 
           cat > pkg-arch/usr/share/applications/${{ env.APP_NAME }}.desktop << DESKTOP

@@ -13,7 +13,31 @@ use crate::media::{ContentSection, MediaId, MediaType, Message};
 use crate::tmdb::ImageSize;
 use crate::Movix;
 
-const YTDLP_PATH: &str = env!("YTDLP_PATH");
+fn get_ytdlp_path() -> String {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            #[cfg(windows)]
+            let ytdlp_name = "yt-dlp.exe";
+            #[cfg(not(windows))]
+            let ytdlp_name = "yt-dlp";
+
+            let bundled_path = exe_dir.join(ytdlp_name);
+            if bundled_path.exists() {
+                return bundled_path.to_string_lossy().to_string();
+            }
+        }
+    }
+
+    let compile_time_path = env!("YTDLP_PATH");
+    if std::path::Path::new(compile_time_path).exists() {
+        return compile_time_path.to_string();
+    }
+
+    #[cfg(windows)]
+    return "yt-dlp.exe".to_string();
+    #[cfg(not(windows))]
+    return "yt-dlp".to_string();
+}
 
 #[derive(Clone)]
 pub struct FrameData {
@@ -269,9 +293,10 @@ impl TrailerManager {
 
     async fn fetch_stream_url(&self, youtube_id: &str) -> Result<String, String> {
         let video_url = format!("https://www.youtube.com/watch?v={}", youtube_id);
+        let ytdlp_path = get_ytdlp_path();
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(8),
-            Command::new(YTDLP_PATH)
+            Command::new(&ytdlp_path)
                 .args([
                     "-f",
                     "22/18/best[height<=720][ext=mp4]/best[height<=720]/best",
