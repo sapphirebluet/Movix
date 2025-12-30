@@ -402,25 +402,30 @@ impl TrailerManager {
     async fn fetch_stream_url(&self, youtube_id: &str) -> Result<String, String> {
         let video_url = format!("https://www.youtube.com/watch?v={}", youtube_id);
         let ytdlp_path = get_ytdlp_path();
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(8),
-            Command::new(&ytdlp_path)
-                .args([
-                    "-f",
-                    "22/18/best[height<=720][ext=mp4]/best[height<=720]/best",
-                    "-g",
-                    "--no-playlist",
-                    "--no-warnings",
-                    "--no-check-certificates",
-                    &video_url,
-                ])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .output(),
-        )
-        .await
-        .map_err(|_| "Timeout")?
-        .map_err(|e| e.to_string())?;
+        let mut cmd = Command::new(&ytdlp_path);
+        cmd.args([
+            "-f",
+            "22/18/best[height<=720][ext=mp4]/best[height<=720]/best",
+            "-g",
+            "--no-playlist",
+            "--no-warnings",
+            "--no-check-certificates",
+            &video_url,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let output = tokio::time::timeout(std::time::Duration::from_secs(8), cmd.output())
+            .await
+            .map_err(|_| "Timeout")?
+            .map_err(|e| e.to_string())?;
 
         let url = String::from_utf8_lossy(&output.stdout)
             .lines()
